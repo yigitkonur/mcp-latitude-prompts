@@ -6,20 +6,22 @@ import latitudeController from '../controllers/latitude.controller.js';
 import {
 	ListProjectsInputSchema,
 	CreateProjectInputSchema,
-	ListVersionsInputSchema,
-	GetVersionInputSchema,
-	CreateVersionInputSchema,
-	PublishVersionInputSchema,
-	ListPromptsInputSchema,
-	GetPromptInputSchema,
-	PushPromptInputSchema,
-	PushPromptFromFileInputSchema,
-	RunPromptInputSchema,
-	PushChangesInputSchema,
 	ChatInputSchema,
 	GetConversationInputSchema,
 	StopConversationInputSchema,
-	CreateLogInputSchema,
+	// Dynamic schema factories (use env var for optional projectId)
+	getListVersionsInputSchema,
+	getGetVersionInputSchema,
+	getCreateVersionInputSchema,
+	getPublishVersionInputSchema,
+	getListPromptsInputSchema,
+	getGetPromptInputSchema,
+	getPushPromptInputSchema,
+	getPushPromptFromFileInputSchema,
+	getRunPromptInputSchema,
+	getPushChangesInputSchema,
+	getCreateLogInputSchema,
+	resolveProjectId,
 } from '../types/latitude.types.js';
 
 const toolLogger = Logger.forContext('tools/latitude.tool.ts');
@@ -259,7 +261,8 @@ async function handleListVersions(args: Record<string, unknown>) {
 	methodLogger.debug('Listing versions', args);
 
 	try {
-		const result = await latitudeController.listVersions(args as { projectId: string });
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.listVersions({ projectId });
 		return { content: [{ type: 'text' as const, text: result.content }] };
 	} catch (error) {
 		methodLogger.error('Error listing versions', error);
@@ -272,9 +275,11 @@ async function handleGetVersion(args: Record<string, unknown>) {
 	methodLogger.debug('Getting version', args);
 
 	try {
-		const result = await latitudeController.getVersion(
-			args as { projectId: string; versionUuid: string },
-		);
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.getVersion({
+			projectId,
+			versionUuid: args.versionUuid as string,
+		});
 		return { content: [{ type: 'text' as const, text: result.content }] };
 	} catch (error) {
 		methodLogger.error('Error getting version', error);
@@ -287,9 +292,11 @@ async function handleCreateVersion(args: Record<string, unknown>) {
 	methodLogger.debug('Creating version', args);
 
 	try {
-		const result = await latitudeController.createVersion(
-			args as { projectId: string; name: string },
-		);
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.createVersion({
+			projectId,
+			name: args.name as string,
+		});
 		return { content: [{ type: 'text' as const, text: result.content }] };
 	} catch (error) {
 		methodLogger.error('Error creating version', error);
@@ -302,9 +309,13 @@ async function handlePublishVersion(args: Record<string, unknown>) {
 	methodLogger.debug('Publishing version', args);
 
 	try {
-		const result = await latitudeController.publishVersion(
-			args as { projectId: string; versionUuid: string; title?: string; description?: string },
-		);
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.publishVersion({
+			projectId,
+			versionUuid: args.versionUuid as string,
+			title: args.title as string | undefined,
+			description: args.description as string | undefined,
+		});
 		return { content: [{ type: 'text' as const, text: result.content }] };
 	} catch (error) {
 		methodLogger.error('Error publishing version', error);
@@ -317,8 +328,9 @@ async function handleListPrompts(args: Record<string, unknown>) {
 	methodLogger.debug('Listing prompts', args);
 
 	try {
+		const projectId = resolveProjectId(args);
 		const typedArgs = {
-			projectId: args.projectId as string,
+			projectId,
 			versionUuid: (args.versionUuid as string) || 'live',
 		};
 		const result = await latitudeController.listPrompts(typedArgs);
@@ -334,8 +346,9 @@ async function handleGetPrompt(args: Record<string, unknown>) {
 	methodLogger.debug('Getting prompt', args);
 
 	try {
+		const projectId = resolveProjectId(args);
 		const typedArgs = {
-			projectId: args.projectId as string,
+			projectId,
 			versionUuid: (args.versionUuid as string) || 'live',
 			path: args.path as string,
 		};
@@ -352,15 +365,14 @@ async function handlePushPrompt(args: Record<string, unknown>) {
 	methodLogger.debug('Pushing prompt', args);
 
 	try {
-		const result = await latitudeController.pushPrompt(
-			args as {
-				projectId: string;
-				versionUuid: string;
-				path: string;
-				content: string;
-				force?: boolean;
-			},
-		);
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.pushPrompt({
+			projectId,
+			versionUuid: args.versionUuid as string,
+			path: args.path as string,
+			content: args.content as string,
+			force: args.force as boolean | undefined,
+		});
 		return { content: [{ type: 'text' as const, text: result.content }] };
 	} catch (error) {
 		methodLogger.error('Error pushing prompt', error);
@@ -373,8 +385,9 @@ async function handlePushPromptFromFile(args: Record<string, unknown>) {
 	methodLogger.debug('Pushing prompt from file', args);
 
 	try {
+		const projectId = resolveProjectId(args);
 		const result = await latitudeController.pushPromptFromFile({
-			projectId: args.projectId as string,
+			projectId,
 			versionUuid: args.versionUuid as string,
 			filePath: args.filePath as string,
 			promptPath: args.promptPath as string | undefined,
@@ -392,8 +405,9 @@ async function handleRunPrompt(args: Record<string, unknown>) {
 	methodLogger.debug('Running prompt', args);
 
 	try {
+		const projectId = resolveProjectId(args);
 		const typedArgs = {
-			projectId: args.projectId as string,
+			projectId,
 			versionUuid: (args.versionUuid as string) || 'live',
 			path: args.path as string,
 			parameters: args.parameters as Record<string, unknown> | undefined,
@@ -414,6 +428,7 @@ async function handlePushChanges(args: Record<string, unknown>) {
 	methodLogger.debug('Pushing changes', args);
 
 	try {
+		const projectId = resolveProjectId(args);
 		const rawChanges = args.changes as Array<{ path: string; content: string; status?: string }>;
 		const changes = rawChanges.map((c) => ({
 			path: c.path,
@@ -422,7 +437,7 @@ async function handlePushChanges(args: Record<string, unknown>) {
 		}));
 		
 		const result = await latitudeController.pushChanges({
-			projectId: args.projectId as string,
+			projectId,
 			versionUuid: args.versionUuid as string,
 			changes,
 		});
@@ -483,14 +498,13 @@ async function handleCreateLog(args: Record<string, unknown>) {
 	methodLogger.debug('Creating log', args);
 
 	try {
-		const result = await latitudeController.createLog(
-			args as {
-				projectId: string;
-				versionUuid: string;
-				path: string;
-				messages: Array<{ role: string; content: string }>;
-			},
-		);
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.createLog({
+			projectId,
+			versionUuid: args.versionUuid as string,
+			path: args.path as string,
+			messages: args.messages as Array<{ role: string; content: string }>,
+		});
 		return { content: [{ type: 'text' as const, text: result.content }] };
 	} catch (error) {
 		methodLogger.error('Error creating log', error);
@@ -527,13 +541,13 @@ function registerTools(server: McpServer) {
 		handleCreateProject,
 	);
 
-	// Versions
+	// Versions (use dynamic schemas for optional projectId)
 	server.registerTool(
 		'latitude_list_versions',
 		{
 			title: 'List Project Versions',
 			description: LIST_VERSIONS_DESC,
-			inputSchema: ListVersionsInputSchema,
+			inputSchema: getListVersionsInputSchema(),
 		},
 		handleListVersions,
 	);
@@ -543,7 +557,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Get Version Details',
 			description: GET_VERSION_DESC,
-			inputSchema: GetVersionInputSchema,
+			inputSchema: getGetVersionInputSchema(),
 		},
 		handleGetVersion,
 	);
@@ -553,7 +567,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Create Draft Version',
 			description: CREATE_VERSION_DESC,
-			inputSchema: CreateVersionInputSchema,
+			inputSchema: getCreateVersionInputSchema(),
 		},
 		handleCreateVersion,
 	);
@@ -563,18 +577,18 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Publish Version',
 			description: PUBLISH_VERSION_DESC,
-			inputSchema: PublishVersionInputSchema,
+			inputSchema: getPublishVersionInputSchema(),
 		},
 		handlePublishVersion,
 	);
 
-	// Prompts/Documents
+	// Prompts/Documents (use dynamic schemas for optional projectId)
 	server.registerTool(
 		'latitude_list_prompts',
 		{
 			title: 'List Prompts',
 			description: LIST_PROMPTS_DESC,
-			inputSchema: ListPromptsInputSchema,
+			inputSchema: getListPromptsInputSchema(),
 		},
 		handleListPrompts,
 	);
@@ -584,7 +598,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Get Prompt',
 			description: GET_PROMPT_DESC,
-			inputSchema: GetPromptInputSchema,
+			inputSchema: getGetPromptInputSchema(),
 		},
 		handleGetPrompt,
 	);
@@ -594,7 +608,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Push Prompt',
 			description: PUSH_PROMPT_DESC,
-			inputSchema: PushPromptInputSchema,
+			inputSchema: getPushPromptInputSchema(),
 		},
 		handlePushPrompt,
 	);
@@ -604,7 +618,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Push Prompt from File',
 			description: PUSH_PROMPT_FROM_FILE_DESC,
-			inputSchema: PushPromptFromFileInputSchema,
+			inputSchema: getPushPromptFromFileInputSchema(),
 		},
 		handlePushPromptFromFile,
 	);
@@ -614,7 +628,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Run Prompt',
 			description: RUN_PROMPT_DESC,
-			inputSchema: RunPromptInputSchema,
+			inputSchema: getRunPromptInputSchema(),
 		},
 		handleRunPrompt,
 	);
@@ -624,7 +638,7 @@ function registerTools(server: McpServer) {
 		{
 			title: 'Push Multiple Changes',
 			description: PUSH_CHANGES_DESC,
-			inputSchema: PushChangesInputSchema,
+			inputSchema: getPushChangesInputSchema(),
 		},
 		handlePushChanges,
 	);
@@ -660,13 +674,13 @@ function registerTools(server: McpServer) {
 		handleStopConversation,
 	);
 
-	// Logs
+	// Logs (use dynamic schema for optional projectId)
 	server.registerTool(
 		'latitude_create_log',
 		{
 			title: 'Create Prompt Log',
 			description: CREATE_LOG_DESC,
-			inputSchema: CreateLogInputSchema,
+			inputSchema: getCreateLogInputSchema(),
 		},
 		handleCreateLog,
 	);

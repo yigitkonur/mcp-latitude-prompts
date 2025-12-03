@@ -18,8 +18,8 @@
 </p>
 
 <p align="center">
-  <img alt="tools" src="https://img.shields.io/badge/🛠️_16_MCP_tools-full_CRUD_operations-2ED573.svg?style=for-the-badge">
-  <img alt="resources" src="https://img.shields.io/badge/📚_4_resources-read_only_access-2ED573.svg?style=for-the-badge">
+  <img alt="tools" src="https://img.shields.io/badge/🛠️_18_MCP_tools-full_CRUD_+_docs-2ED573.svg?style=for-the-badge">
+  <img alt="resources" src="https://img.shields.io/badge/📚_6_resources-read_only_access-2ED573.svg?style=for-the-badge">
 </p>
 
 <div align="center">
@@ -217,7 +217,7 @@ Add to `.cursor/mcp.json` or MCP settings:
 
 ## 🛠️ Tool Reference
 
-This server provides **16 MCP tools** covering the complete Latitude API.
+This server provides **18 MCP tools** covering the complete Latitude API plus built-in documentation.
 
 <div align="center">
 <table>
@@ -227,6 +227,7 @@ This server provides **16 MCP tools** covering the complete Latitude API.
 <td align="center">📝<br/><b>Prompts</b></td>
 <td align="center">🤖<br/><b>Execution</b></td>
 <td align="center">📊<br/><b>Operations</b></td>
+<td align="center">📚<br/><b>Docs</b></td>
 </tr>
 <tr>
 <td valign="top">
@@ -255,9 +256,102 @@ This server provides **16 MCP tools** covering the complete Latitude API.
 <code>create_log</code><br/>
 <code>trigger_evaluation</code>
 </td>
+<td valign="top">
+<code>help</code><br/>
+<code>get_docs</code>
+</td>
 </tr>
 </table>
 </div>
+
+---
+
+### 📚 Documentation Tools (AI Self-Learning)
+
+The server includes **self-documenting capabilities** so AI agents can learn PromptL syntax on-demand without external lookups.
+
+#### `latitude_help`
+
+Get complete server overview — all tools, documentation topics, and quick start workflow.
+
+```json
+// No parameters required
+{}
+```
+
+**Returns:** Server overview with tool list, doc topics, and suggested next actions.
+
+**AI agents should call this first** to understand available capabilities.
+
+---
+
+#### `latitude_get_docs`
+
+Get comprehensive PromptL documentation for a specific topic.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `topic` | `enum` | Yes | Documentation topic (see below) |
+
+**Available Topics:**
+
+| Topic | What You'll Learn |
+|-------|------------------|
+| `overview` | What is PromptL, getting started |
+| `structure` | Config section (YAML) + Messages (system, user, assistant) |
+| `variables` | `{{ }}` syntax, expressions, defaults, assignments |
+| `conditionals` | `if/else/endif` logic for dynamic content |
+| `loops` | `for/each` iteration for few-shot examples |
+| `references` | Include other prompts with `<prompt>` tag |
+| `tools` | Function calling with JSON Schema parameters |
+| `chains` | Multi-step prompts with `<step>` tags |
+| `agents` | Multi-agent orchestration and collaboration |
+| `techniques` | Few-shot, Chain-of-Thought, Tree-of-Thoughts, Role prompting |
+
+```json
+{
+  "topic": "variables"
+}
+```
+
+**Returns:** Comprehensive documentation with syntax, examples, best practices, and next steps.
+
+---
+
+#### Writing PromptL-Compliant Prompts
+
+AI agents can use these tools to write valid PromptL prompts:
+
+```
+1. latitude_help                           → Understand server capabilities
+2. latitude_get_docs({ topic: "structure" }) → Learn basic prompt structure
+3. latitude_get_docs({ topic: "variables" }) → Learn {{ }} syntax
+4. latitude_push_prompt                     → Push your prompt
+5. latitude_run_prompt                      → Test execution
+```
+
+**Example learning flow for writing a prompt with conditionals:**
+
+```
+AI: latitude_get_docs({ topic: "structure" })
+   → Learns: Config section (---), message tags (<user>, <assistant>)
+
+AI: latitude_get_docs({ topic: "conditionals" })
+   → Learns: {{ if }}, {{ else }}, {{ endif }} syntax
+
+AI: Now writes valid PromptL:
+   ---
+   provider: OpenAI
+   model: gpt-4o
+   ---
+   {{ if user.isPremium }}
+     You have access to all features!
+   {{ else }}
+     Upgrade for premium features.
+   {{ endif }}
+   
+   <user>{{ question }}</user>
+```
 
 ---
 
@@ -530,6 +624,8 @@ Access Latitude data via MCP resources (read-only):
 | `latitude://projects/{projectId}/versions` | List versions for project |
 | `latitude://projects/{projectId}/versions/{versionUuid}/prompts` | List prompts in version |
 | `latitude://projects/{projectId}/versions/{versionUuid}/prompts/{path}` | Get specific prompt |
+| `docs://latitude/help` | Server overview & quick start |
+| `docs://latitude/{topic}` | PromptL documentation by topic |
 
 ---
 

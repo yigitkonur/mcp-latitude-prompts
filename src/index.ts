@@ -13,6 +13,8 @@ import cors from 'cors';
 // Import tools and resources
 import latitudeTools from './tools/latitude.tool.js';
 import latitudeResources from './resources/latitude.resource.js';
+import docsTools from './tools/docs.tool.js';
+import docsResources from './resources/docs.resource.js';
 
 const logger = Logger.forContext('index.ts');
 
@@ -51,7 +53,9 @@ export async function startServer(
 	serverLogger.info('Registering MCP tools and resources...');
 	latitudeTools.registerTools(serverInstance);
 	latitudeResources.registerResources(serverInstance);
-	serverLogger.debug('All Latitude tools and resources registered');
+	docsTools.registerTools(serverInstance);
+	docsResources.registerResources(serverInstance);
+	serverLogger.debug('All tools and resources registered (18 tools, 6 resources)');
 
 	if (mode === 'stdio') {
 		serverLogger.info('Using STDIO transport');
