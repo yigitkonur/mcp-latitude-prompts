@@ -1,5 +1,5 @@
 {
-	"name": "@anthropic/latitude-mcp-server",
+	"name": "latitude-mcp-server",
 	"version": "1.0.0",
 	"description": "MCP server for Latitude prompt management - manage prompts, versions, and run AI conversations",
 	"main": "dist/index.js",
@@ -7,7 +7,7 @@
 	"type": "commonjs",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/anthropic/latitude-mcp-server.git"
+		"url": "https://github.com/yigitkonur/latitude-mcp-server.git"
 	},
 	"bin": {
 		"latitude-mcp": "./dist/index.js"
