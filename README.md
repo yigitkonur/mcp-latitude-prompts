@@ -598,16 +598,17 @@ Get full conversation history.
 
 ### Operations Tools
 
-#### `latitude_list_logs`
+#### `latitude_push_changes`
 
-Get execution logs for a prompt.
+Push multiple document changes in a single operation.
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `projectId` | `string` | Yes | — | Project ID |
-| `documentUuid` | `string` | No | — | Filter by prompt UUID |
-| `page` | `number` | No | `1` | Page number |
-| `pageSize` | `number` | No | `25` | Results per page |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectId` | `string` | Yes | Project ID |
+| `versionUuid` | `string` | Yes | Target version UUID (must be draft) |
+| `changes` | `array` | Yes | Array of `{path, content, status}` |
+
+**Change status values:** `"added"` | `"modified"` | `"deleted"`
 
 ---
 
@@ -623,14 +624,13 @@ Create a log entry for external executions.
 
 ---
 
-#### `latitude_trigger_evaluation`
+#### `latitude_stop_conversation`
 
-Trigger an evaluation run for a prompt.
+Stop an ongoing conversation/generation.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `projectId` | `string` | Yes | Project ID |
-| `evaluationUuid` | `string` | Yes | Evaluation UUID |
+| `conversationUuid` | `string` | Yes | Conversation UUID to stop |
 
 ---
 
