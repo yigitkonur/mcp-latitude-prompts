@@ -548,6 +548,93 @@ Push prompt content to a draft version.
 
 ---
 
+#### `latitude_push_prompts_from_files`
+
+Push multiple prompt files to a draft version in a single batch operation.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `projectId` | `string` | Yes | — | Project ID |
+| `versionUuid` | `string` | Yes | — | Draft version UUID |
+| `filePaths` | `array` | No* | — | Array of absolute file paths |
+| `directory` | `string` | No* | — | Directory path (scans recursively) |
+| `promptPathPrefix` | `string` | No | — | Prefix for prompt paths |
+| `force` | `boolean` | No | `false` | Force overwrite |
+
+**\*Either `filePaths` OR `directory` is required.**
+
+**Example 1 - Directory (easiest):**
+```json
+{
+  "projectId": "27756",
+  "versionUuid": "79b52596-7941-4ed3-82cf-23e13fa170db",
+  "directory": "/Users/you/prompts",
+  "promptPathPrefix": "v2/"
+}
+```
+
+**Example 2 - Specific files:**
+```json
+{
+  "projectId": "27756",
+  "versionUuid": "79b52596-7941-4ed3-82cf-23e13fa170db",
+  "filePaths": [
+    "/Users/you/prompts/chat.md",
+    "/Users/you/prompts/extract.promptl"
+  ]
+}
+```
+
+**Returns:** Summary with success/error counts per file.
+
+---
+
+#### `latitude_deploy_prompts` ⭐⭐
+
+**KILLER FEATURE:** Deploy multiple prompts directly to production in ONE command.
+
+This automates the entire workflow:
+1. Creates a draft version
+2. Pushes all files in batch
+3. Publishes to production
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `projectId` | `string` | Yes | — | Project ID |
+| `filePaths` | `array` | No* | — | Array of absolute file paths |
+| `directory` | `string` | No* | — | Directory path (scans recursively) |
+| `promptPathPrefix` | `string` | No | — | Prefix for prompt paths |
+| `versionName` | `string` | No | auto | Draft version name |
+| `publishTitle` | `string` | No | auto | Publication title |
+| `publishDescription` | `string` | No | auto | Publication description |
+
+**\*Either `filePaths` OR `directory` is required.**
+
+**Example 1 - Deploy entire directory (EASIEST):**
+```json
+{
+  "projectId": "27756",
+  "directory": "/Users/you/prompts",
+  "publishTitle": "Production release v2.1"
+}
+```
+
+**Example 2 - Deploy specific files:**
+```json
+{
+  "projectId": "27756",
+  "filePaths": [
+    "/Users/you/prompts/support.md",
+    "/Users/you/prompts/onboarding.promptl"
+  ],
+  "publishTitle": "Release support prompts"
+}
+```
+
+**Returns:** Deployment status with version info and file results.
+
+---
+
 ### Execution Tools
 
 #### `latitude_run_prompt`

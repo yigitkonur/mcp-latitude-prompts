@@ -24,6 +24,41 @@ function derivePromptPath(filePath: string): string {
 }
 
 /**
+ * Scan directory recursively for prompt files
+ * Returns array of absolute paths to .md, .promptl, .txt files
+ */
+function scanDirectoryForPrompts(directory: string): string[] {
+	const { readdirSync } = require('fs');
+	const { join } = require('path');
+	
+	const absoluteDir = resolve(directory);
+	if (!existsSync(absoluteDir)) {
+		throw new Error(`Directory not found: ${absoluteDir}`);
+	}
+
+	const promptExtensions = ['.md', '.promptl', '.txt'];
+	const files: string[] = [];
+
+	function scan(dir: string) {
+		const entries = readdirSync(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			const fullPath = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				scan(fullPath);
+			} else if (entry.isFile()) {
+				const ext = extname(entry.name);
+				if (promptExtensions.includes(ext)) {
+					files.push(fullPath);
+				}
+			}
+		}
+	}
+
+	scan(absoluteDir);
+	return files;
+}
+
+/**
  * Output format type
  */
 type OutputFormat = 'toon' | 'json';
@@ -497,6 +532,298 @@ async function runPrompt(
 	}
 }
 
+async function pushPromptsFromFiles(
+	args: {
+		projectId: string;
+		versionUuid: string;
+		filePaths?: string[];
+		directory?: string;
+		promptPathPrefix?: string;
+		force?: boolean;
+	} & ControllerOptions,
+): Promise<ControllerResponse> {
+	const methodLogger = Logger.forContext(
+		'controllers/latitude.controller.ts',
+		'pushPromptsFromFiles',
+	);
+
+	// Resolve file paths from directory or use provided filePaths
+	let resolvedFilePaths: string[];
+	if (args.directory) {
+		methodLogger.debug(`Scanning directory: ${args.directory}`);
+		resolvedFilePaths = scanDirectoryForPrompts(args.directory);
+		methodLogger.debug(`Found ${resolvedFilePaths.length} prompt files`);
+	} else if (args.filePaths) {
+		resolvedFilePaths = args.filePaths;
+	} else {
+		throw new Error('Either filePaths or directory must be provided');
+	}
+
+	methodLogger.debug(
+		`Pushing ${resolvedFilePaths.length} files to version: ${args.versionUuid}`,
+	);
+
+	try {
+		const results: Array<{
+			filePath: string;
+			promptPath: string;
+			status: 'success' | 'error';
+			error?: string;
+		}> = [];
+
+		// Build changes array for batch push
+		const changes: Array<{
+			path: string;
+			content: string;
+			status: 'added' | 'modified' | 'deleted' | 'unchanged';
+		}> = [];
+
+		for (const filePath of resolvedFilePaths) {
+			const absolutePath = resolve(filePath);
+
+			if (!existsSync(absolutePath)) {
+				results.push({
+					filePath: absolutePath,
+					promptPath: '',
+					status: 'error',
+					error: `File not found: ${absolutePath}`,
+				});
+				continue;
+			}
+
+			try {
+				const content = readFileSync(absolutePath, 'utf-8');
+				let promptPath = derivePromptPath(filePath);
+
+				// Add prefix if provided
+				if (args.promptPathPrefix) {
+					const prefix = args.promptPathPrefix.endsWith('/')
+						? args.promptPathPrefix
+						: args.promptPathPrefix + '/';
+					promptPath = prefix + promptPath;
+				}
+
+				changes.push({
+					path: promptPath,
+					content,
+					status: 'modified',
+				});
+
+				results.push({
+					filePath: absolutePath,
+					promptPath,
+					status: 'success',
+				});
+			} catch (fileError) {
+				results.push({
+					filePath: absolutePath,
+					promptPath: '',
+					status: 'error',
+					error:
+						fileError instanceof Error
+							? fileError.message
+							: String(fileError),
+				});
+			}
+		}
+
+		// Push all changes in batch
+		if (changes.length > 0) {
+			await latitudeService.pushChanges(args.projectId, args.versionUuid, {
+				changes,
+			});
+		}
+
+		const successCount = results.filter((r) => r.status === 'success').length;
+		const errorCount = results.filter((r) => r.status === 'error').length;
+
+		return formatOutput(
+			{
+				summary: {
+					total: resolvedFilePaths.length,
+					success: successCount,
+					errors: errorCount,
+				},
+				results,
+				versionUuid: args.versionUuid,
+			},
+			args,
+		);
+	} catch (error) {
+		throw handleControllerError(
+			error,
+			buildErrorContext(
+				'Latitude',
+				'pushPromptsFromFiles',
+				'controllers/latitude.controller.ts@pushPromptsFromFiles',
+				args.versionUuid,
+				{ args },
+			),
+		);
+	}
+}
+
+async function deployPrompts(
+	args: {
+		projectId: string;
+		filePaths?: string[];
+		directory?: string;
+		promptPathPrefix?: string;
+		versionName?: string;
+		publishTitle?: string;
+		publishDescription?: string;
+	} & ControllerOptions,
+): Promise<ControllerResponse> {
+	const methodLogger = Logger.forContext(
+		'controllers/latitude.controller.ts',
+		'deployPrompts',
+	);
+
+	// Resolve file paths from directory or use provided filePaths
+	let resolvedFilePaths: string[];
+	if (args.directory) {
+		methodLogger.debug(`Scanning directory: ${args.directory}`);
+		resolvedFilePaths = scanDirectoryForPrompts(args.directory);
+		methodLogger.debug(`Found ${resolvedFilePaths.length} prompt files`);
+	} else if (args.filePaths) {
+		resolvedFilePaths = args.filePaths;
+	} else {
+		throw new Error('Either filePaths or directory must be provided');
+	}
+
+	methodLogger.debug(
+		`Deploying ${resolvedFilePaths.length} prompts to production`,
+	);
+
+	try {
+		// Step 1: Create draft version
+		const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+		const versionName = args.versionName || `Deploy ${timestamp}`;
+
+		methodLogger.debug(`Creating draft version: ${versionName}`);
+		const draftVersion = await latitudeService.createVersion(
+			args.projectId,
+			versionName,
+		);
+
+		// Step 2: Read files and build changes
+		const changes: Array<{
+			path: string;
+			content: string;
+			status: 'added' | 'modified' | 'deleted' | 'unchanged';
+		}> = [];
+		const fileResults: Array<{
+			filePath: string;
+			promptPath: string;
+			status: 'success' | 'error';
+			error?: string;
+		}> = [];
+
+		for (const filePath of resolvedFilePaths) {
+			const absolutePath = resolve(filePath);
+
+			if (!existsSync(absolutePath)) {
+				fileResults.push({
+					filePath: absolutePath,
+					promptPath: '',
+					status: 'error',
+					error: `File not found: ${absolutePath}`,
+				});
+				continue;
+			}
+
+			try {
+				const content = readFileSync(absolutePath, 'utf-8');
+				let promptPath = derivePromptPath(filePath);
+
+				if (args.promptPathPrefix) {
+					const prefix = args.promptPathPrefix.endsWith('/')
+						? args.promptPathPrefix
+						: args.promptPathPrefix + '/';
+					promptPath = prefix + promptPath;
+				}
+
+				changes.push({
+					path: promptPath,
+					content,
+					status: 'modified',
+				});
+
+				fileResults.push({
+					filePath: absolutePath,
+					promptPath,
+					status: 'success',
+				});
+			} catch (fileError) {
+				fileResults.push({
+					filePath: absolutePath,
+					promptPath: '',
+					status: 'error',
+					error:
+						fileError instanceof Error
+							? fileError.message
+							: String(fileError),
+				});
+			}
+		}
+
+		// Check if we have any files to push
+		if (changes.length === 0) {
+			throw new Error(
+				'No valid files to deploy. All files either not found or failed to read.',
+			);
+		}
+
+		// Step 3: Push all changes in batch
+		methodLogger.debug(`Pushing ${changes.length} prompts to draft`);
+		await latitudeService.pushChanges(args.projectId, draftVersion.uuid, {
+			changes,
+		});
+
+		// Step 4: Publish to production
+		methodLogger.debug('Publishing draft to production');
+		const publishedVersion = await latitudeService.publishVersion(
+			args.projectId,
+			draftVersion.uuid,
+			{
+				title: args.publishTitle || `Deploy ${changes.length} prompts`,
+				description:
+					args.publishDescription ||
+					`Deployed prompts: ${changes.map((c) => c.path).join(', ')}`,
+			},
+		);
+
+		return formatOutput(
+			{
+				status: 'deployed',
+				version: {
+					uuid: publishedVersion.uuid,
+					title: publishedVersion.title,
+					mergedAt: publishedVersion.mergedAt,
+				},
+				summary: {
+					total: resolvedFilePaths.length,
+					deployed: changes.length,
+					errors: fileResults.filter((r) => r.status === 'error').length,
+				},
+				files: fileResults,
+			},
+			args,
+		);
+	} catch (error) {
+		throw handleControllerError(
+			error,
+			buildErrorContext(
+				'Latitude',
+				'deployPrompts',
+				'controllers/latitude.controller.ts@deployPrompts',
+				'production deployment',
+				{ args },
+			),
+		);
+	}
+}
+
 async function createLog(
 	args: {
 		projectId: string;
@@ -664,8 +991,12 @@ export default {
 	getPrompt,
 	pushPrompt,
 	pushPromptFromFile,
+	pushPromptsFromFiles,
 	runPrompt,
 	createLog,
+
+	// Deployment
+	deployPrompts,
 
 	// Conversations
 	getConversation,

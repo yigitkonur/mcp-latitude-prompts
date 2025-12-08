@@ -444,6 +444,79 @@ export function getPushChangesInputSchema() {
 	});
 }
 
+// Batch file operations
+export function getPushPromptsFromFilesInputSchema() {
+	return z
+		.object({
+			projectId: projectIdField(),
+			versionUuid: z
+				.string()
+				.describe("Target version UUID (must be draft, not 'live')"),
+			filePaths: z
+				.array(z.string())
+				.optional()
+				.describe(
+					'Array of absolute paths to prompt files. Omit if using directory.',
+				),
+			directory: z
+				.string()
+				.optional()
+				.describe(
+					'Absolute path to directory containing prompts. Scans recursively for .md, .promptl, .txt files.',
+				),
+			promptPathPrefix: z
+				.string()
+				.optional()
+				.describe(
+					'Optional prefix for prompt paths (e.g., "folder/" makes "prompt.md" → "folder/prompt")',
+				),
+			force: z.boolean().default(false).describe('Force overwrite if exists'),
+		})
+		.refine((data) => data.filePaths || data.directory, {
+			message: 'Either filePaths or directory must be provided',
+		});
+}
+
+export function getDeployPromptsInputSchema() {
+	return z
+		.object({
+			projectId: projectIdField(),
+			filePaths: z
+				.array(z.string())
+				.optional()
+				.describe(
+					'Array of absolute paths to prompt files. Omit if using directory.',
+				),
+			directory: z
+				.string()
+				.optional()
+				.describe(
+					'Absolute path to directory containing prompts. Scans recursively for .md, .promptl, .txt files.',
+				),
+			promptPathPrefix: z
+				.string()
+				.optional()
+				.describe('Optional prefix for prompt paths in Latitude'),
+			versionName: z
+				.string()
+				.optional()
+				.describe(
+					'Optional name for the draft version (defaults to "Deploy [timestamp]")',
+				),
+			publishTitle: z
+				.string()
+				.optional()
+				.describe('Optional title for the publication'),
+			publishDescription: z
+				.string()
+				.optional()
+				.describe('Optional description for the publication'),
+		})
+		.refine((data) => data.filePaths || data.directory, {
+			message: 'Either filePaths or directory must be provided',
+		});
+}
+
 // Conversation tools
 export const ChatInputSchema = z.object({
 	conversationUuid: z

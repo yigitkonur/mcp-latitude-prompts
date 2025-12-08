@@ -18,9 +18,11 @@ import {
 	getGetPromptInputSchema,
 	getPushPromptInputSchema,
 	getPushPromptFromFileInputSchema,
+	getPushPromptsFromFilesInputSchema,
 	getRunPromptInputSchema,
 	getPushChangesInputSchema,
 	getCreateLogInputSchema,
+	getDeployPromptsInputSchema,
 	resolveProjectId,
 } from '../types/latitude.types.js';
 
@@ -225,6 +227,69 @@ const CREATE_LOG_DESC = `Create a prompt execution log for analytics.
 - \`messages\` (required) - Array of {role, content} messages
 
 **Returns:** Created log confirmation.`;
+
+const PUSH_PROMPTS_FROM_FILES_DESC = `Push multiple prompt files to a draft version in a single batch operation.
+
+**Use when:** You have several local prompt files to push at once.
+
+**Parameters:**
+- \`projectId\` (required) - Project ID
+- \`versionUuid\` (required) - Draft version UUID (must be draft, not "live")
+- \`filePaths\` (optional) - Array of absolute paths to prompt files
+- \`directory\` (optional) - Absolute path to directory (scans recursively for .md, .promptl, .txt)
+- \`promptPathPrefix\` (optional) - Prefix for prompt paths (e.g., "folder/")
+- \`force\` (optional) - Force overwrite if exists
+
+**Note:** Provide either \`filePaths\` OR \`directory\`, not both.
+
+**Example 1 - Directory (easiest):**
+\`\`\`
+directory: "/Users/you/prompts"
+promptPathPrefix: "agents/"
+→ Scans /Users/you/prompts recursively, pushes all .md/.promptl/.txt files
+\`\`\`
+
+**Example 2 - Explicit files:**
+\`\`\`
+filePaths: ["/prompts/chat.md", "/prompts/extract.promptl"]
+\`\`\`
+
+**Returns:** Summary with success/error counts and individual file results.`;
+
+const DEPLOY_PROMPTS_DESC = `Deploy multiple prompt files directly to production in ONE command.
+
+**⭐⭐ KILLER FEATURE:** This tool automates the entire deployment workflow:
+1. Creates a new draft version
+2. Pushes all files in batch
+3. Publishes to production
+
+**Use when:** You want to deploy prompts to production without manual steps.
+
+**Parameters:**
+- \`projectId\` (required) - Project ID
+- \`filePaths\` (optional) - Array of absolute paths to prompt files
+- \`directory\` (optional) - Absolute path to directory (scans recursively)
+- \`promptPathPrefix\` (optional) - Prefix for prompt paths in Latitude
+- \`versionName\` (optional) - Name for the draft version (auto-generated if not provided)
+- \`publishTitle\` (optional) - Title for the publication
+- \`publishDescription\` (optional) - Description for the publication
+
+**Note:** Provide either \`filePaths\` OR \`directory\`, not both.
+
+**Example 1 - Deploy entire directory (EASIEST):**
+\`\`\`
+directory: "/Users/you/prompts"
+publishTitle: "Production release"
+→ Scans directory, creates draft, pushes all files, publishes to live
+\`\`\`
+
+**Example 2 - Deploy specific files:**
+\`\`\`
+filePaths: ["/prompts/support.md", "/prompts/onboarding.md"]
+publishTitle: "Release v2 prompts"
+\`\`\`
+
+**Returns:** Deployment status with version info, file results, and summary.`;
 
 // ============================================================================
 // Tool Handlers
@@ -458,6 +523,49 @@ async function handlePushChanges(args: Record<string, unknown>) {
 	}
 }
 
+async function handlePushPromptsFromFiles(args: Record<string, unknown>) {
+	const methodLogger = toolLogger.forMethod('handlePushPromptsFromFiles');
+	methodLogger.debug('Pushing prompts from files', args);
+
+	try {
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.pushPromptsFromFiles({
+			projectId,
+			versionUuid: args.versionUuid as string,
+			filePaths: args.filePaths as string[] | undefined,
+			directory: args.directory as string | undefined,
+			promptPathPrefix: args.promptPathPrefix as string | undefined,
+			force: args.force as boolean | undefined,
+		});
+		return { content: [{ type: 'text' as const, text: result.content }] };
+	} catch (error) {
+		methodLogger.error('Error pushing prompts from files', error);
+		return formatErrorForMcpTool(error);
+	}
+}
+
+async function handleDeployPrompts(args: Record<string, unknown>) {
+	const methodLogger = toolLogger.forMethod('handleDeployPrompts');
+	methodLogger.debug('Deploying prompts to production', args);
+
+	try {
+		const projectId = resolveProjectId(args);
+		const result = await latitudeController.deployPrompts({
+			projectId,
+			filePaths: args.filePaths as string[] | undefined,
+			directory: args.directory as string | undefined,
+			promptPathPrefix: args.promptPathPrefix as string | undefined,
+			versionName: args.versionName as string | undefined,
+			publishTitle: args.publishTitle as string | undefined,
+			publishDescription: args.publishDescription as string | undefined,
+		});
+		return { content: [{ type: 'text' as const, text: result.content }] };
+	} catch (error) {
+		methodLogger.error('Error deploying prompts', error);
+		return formatErrorForMcpTool(error);
+	}
+}
+
 async function handleChat(args: Record<string, unknown>) {
 	const methodLogger = toolLogger.forMethod('handleChat');
 	methodLogger.debug('Chatting', args);
@@ -657,6 +765,26 @@ function registerTools(server: McpServer) {
 		handlePushChanges,
 	);
 
+	server.registerTool(
+		'latitude_push_prompts_from_files',
+		{
+			title: 'Push Multiple Prompts from Files',
+			description: PUSH_PROMPTS_FROM_FILES_DESC,
+			inputSchema: getPushPromptsFromFilesInputSchema(),
+		},
+		handlePushPromptsFromFiles,
+	);
+
+	server.registerTool(
+		'latitude_deploy_prompts',
+		{
+			title: 'Deploy Prompts to Production',
+			description: DEPLOY_PROMPTS_DESC,
+			inputSchema: getDeployPromptsInputSchema(),
+		},
+		handleDeployPrompts,
+	);
+
 	// Conversations
 	server.registerTool(
 		'latitude_chat',
@@ -699,7 +827,7 @@ function registerTools(server: McpServer) {
 		handleCreateLog,
 	);
 
-	methodLogger.debug('Successfully registered 16 Latitude tools');
+	methodLogger.debug('Successfully registered 18 Latitude tools');
 }
 
 export default { registerTools };
