@@ -391,11 +391,16 @@ const PushPromptsSchema = z.object({
 		.array(z.string())
 		.optional()
 		.describe('File paths to .promptl files - FULL SYNC: deletes remote prompts not in this list'),
+	versionName: z
+		.string()
+		.optional()
+		.describe('Optional version name (like git branch: feat/add-auth, fix/typo). If omitted, auto-generates timestamp.'),
 });
 
 async function handlePushPrompts(args: {
 	prompts?: Array<{ name: string; content: string }>;
 	filePaths?: string[];
+	versionName?: string;
 }): Promise<ToolResult> {
 	try {
 		// Build prompts from either direct input or file paths
@@ -447,7 +452,7 @@ async function handlePushPrompts(args: {
 
 		// Push all changes in one batch
 		try {
-			const result = await deployToLive(changes, 'push');
+			const result = await deployToLive(changes, args.versionName || 'push');
 			
 			// Force refresh cache after mutations
 			const newNames = await forceRefreshAndGetNames();
@@ -500,11 +505,16 @@ const AddPromptSchema = z.object({
 		.array(z.string())
 		.optional()
 		.describe('File paths to .promptl files - overwrites if exists, adds if new'),
+	versionName: z
+		.string()
+		.optional()
+		.describe('Optional version name (like git commit: feat/add-auth, fix/typo). Describes what changed.'),
 });
 
 async function handleAddPrompt(args: {
 	prompts?: Array<{ name: string; content: string }>;
 	filePaths?: string[];
+	versionName?: string;
 }): Promise<ToolResult> {
 	try {
 		// Build prompts from either direct input or file paths
@@ -578,7 +588,7 @@ async function handleAddPrompt(args: {
 
 		// Push all changes in one batch
 		try {
-			const result = await deployToLive(changes, 'add');
+			const result = await deployToLive(changes, args.versionName || 'add');
 			
 			// Force refresh cache after mutations
 			const newNames = await forceRefreshAndGetNames();

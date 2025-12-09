@@ -23,7 +23,7 @@ async function main(): Promise<void> {
 
 	// Log startup info
 	logger.info('='.repeat(50));
-	logger.info('Latitude MCP Server v2.0.0');
+	logger.info('Latitude MCP Server v3.1.0');
 	logger.info('='.repeat(50));
 
 	// Validate required environment variables

@@ -316,17 +316,7 @@ export function getProjectId(): string {
 	return getConfig().projectId;
 }
 
-export async function listVersions(): Promise<Version[]> {
-	const projectId = getProjectId();
-	return request<Version[]>(`/projects/${projectId}/versions`);
-}
-
-export async function getVersion(versionUuid: string): Promise<Version> {
-	const projectId = getProjectId();
-	return request<Version>(`/projects/${projectId}/versions/${versionUuid}`);
-}
-
-export async function createVersion(name: string): Promise<Version> {
+async function createVersion(name: string): Promise<Version> {
 	const projectId = getProjectId();
 	return request<Version>(`/projects/${projectId}/versions`, {
 		method: 'POST',
@@ -334,7 +324,7 @@ export async function createVersion(name: string): Promise<Version> {
 	});
 }
 
-export async function publishVersion(versionUuid: string, title?: string): Promise<Version> {
+async function publishVersion(versionUuid: string, title?: string): Promise<Version> {
 	const projectId = getProjectId();
 	logger.debug(`Publishing version ${versionUuid} with title: ${title || '(none)'}`);
 	return request<Version>(
@@ -363,35 +353,6 @@ export async function getDocument(
 	const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
 	return request<Document>(
 		`/projects/${projectId}/versions/${versionUuid}/documents/${normalizedPath}`
-	);
-}
-
-export async function createOrUpdateDocument(
-	versionUuid: string,
-	path: string,
-	content: string,
-	force: boolean = false
-): Promise<Document> {
-	const projectId = getProjectId();
-	logger.debug(`Creating/updating document: ${path} (${content.length} chars, force=${force})`);
-	return request<Document>(
-		`/projects/${projectId}/versions/${versionUuid}/documents/create-or-update`,
-		{
-			method: 'POST',
-			body: { path, prompt: content, force },
-		}
-	);
-}
-
-export async function deleteDocument(
-	versionUuid: string,
-	path: string
-): Promise<void> {
-	const projectId = getProjectId();
-	const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
-	await request<void>(
-		`/projects/${projectId}/versions/${versionUuid}/documents/${normalizedPath}`,
-		{ method: 'DELETE' }
 	);
 }
 
@@ -931,15 +892,5 @@ export async function deployToLive(
 		
 		// Re-throw original error if we couldn't identify specific failures
 		throw publishError;
-	}
-}
-
-export async function getPromptNames(): Promise<string[]> {
-	try {
-		const docs = await listDocuments('live');
-		return docs.map((doc) => doc.path);
-	} catch (error) {
-		logger.warn('Failed to fetch prompt names', error);
-		return [];
 	}
 }

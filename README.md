@@ -1,22 +1,23 @@
 # Latitude MCP Server
 
-> Model Context Protocol server for [Latitude.so](https://latitude.so) prompt management
+> **AI-powered prompt management** for [Latitude.so](https://latitude.so) via Model Context Protocol
 
-Manage AI prompts directly from your MCP-compatible AI assistant. Push, pull, run, and version PromptL prompts with 8 focused tools.
+Manage PromptL prompts directly from Claude, Windsurf, or any MCP client. Features **intelligent validation**, **dynamic tool descriptions**, and **git-style versioning**.
 
 [![npm version](https://img.shields.io/npm/v/latitude-mcp-server.svg)](https://www.npmjs.com/package/latitude-mcp-server)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 
 ---
 
-## Features
+## ✨ Key Features
 
-- **8 MCP Tools** - Push, pull, run, and manage prompts
-- **52 Documentation Topics** - Comprehensive PromptL syntax guide
-- **Semantic Search** - Find docs by natural language query
-- **File Operations** - Pull prompts to local `.promptl` files
-- **Version Control** - Manage LIVE and draft versions
-- **Zero Config** - Works with `LATITUDE_API_KEY` environment variable
+- **🤖 Smart Validation** - Client-side PromptL validation with AST-powered error messages
+- **📋 Dynamic Descriptions** - Tools show available prompts and their parameters automatically
+- **🔄 Full Sync** - Push/pull with automatic conflict resolution
+- **🎯 Atomic Operations** - Validate ALL before pushing ANY (all-or-nothing)
+- **📚 52 Doc Topics** - Comprehensive PromptL syntax guide with semantic search
+- **🏷️ Git-Style Versioning** - Name your changes like commits (feat/add-auth, fix/typo)
+- **⚡ Zero Config** - Just set `LATITUDE_API_KEY` and go
 
 ---
 
@@ -60,86 +61,209 @@ Add to your MCP client config (e.g., Claude Desktop):
 
 ---
 
-## Available Tools
+## 🛠️ Available Tools (7)
 
-| Tool | Description |
-|------|-------------|
-| `list_prompts` | List all prompts in LIVE version |
-| `get_prompt` | Get full prompt content by name |
-| `run_prompt` | Execute a prompt with parameters |
-| `push_prompts` | Replace ALL prompts (destructive) |
-| `append_prompts` | Add prompts without removing existing |
-| `pull_prompts` | Download prompts to local files |
-| `replace_prompt` | Replace or create single prompt |
-| `docs` | Get documentation (52 topics) |
+| Tool | Type | Description |
+|------|------|-------------|
+| `list_prompts` | Read | List all prompts in LIVE |
+| `get_prompt` | Read | Get full prompt content by name |
+| `run_prompt` | Execute | 🎯 **Dynamic:** Shows all prompts with their parameters |
+| `push_prompts` | Write | 🔄 **FULL SYNC:** Replace ALL prompts (deletes extras) |
+| `pull_prompts` | Read | 🔄 **FULL SYNC:** Download all prompts (deletes local first) |
+| `add_prompt` | Write | 🎯 **Dynamic:** Add/update prompts (shows available prompts) |
+| `docs` | Read | Get documentation (52 topics, semantic search) |
+
+### 🎯 What Makes This Special?
+
+**Dynamic Tool Descriptions** - The MCP server updates tool descriptions in real-time:
+- `run_prompt` shows: `"my-prompt" (params: name, email, company)`
+- `add_prompt` shows: `"Available prompts (10): prompt-a, prompt-b, ..."`
+
+Your AI assistant sees exactly what prompts exist and what parameters they need!
 
 ---
 
-## Common Workflows
+## 🚀 Real-World Workflows
 
-### Pull Prompts to Local Files
+### Workflow 1: New Project Setup
 
-```
+```bash
+# Pull all prompts from LIVE to start local development
 pull_prompts({ outputDir: "./prompts" })
+# Downloads 10 files to ./prompts/
+# Deletes any existing local .promptl files first (FULL SYNC)
 ```
 
-Downloads all LIVE prompts to `./prompts/*.promptl` files.
-
-### List Available Prompts
-
+**What you see:**
 ```
-list_prompts()
-```
+✅ Prompts Pulled from LIVE
 
-Returns all prompt names in your project.
+Directory: /Users/you/project/prompts
+Deleted: 0 existing files
+Written: 10 files
 
-### Get Prompt Content
+Files:
+- cover-letter-generate.promptl
+- sentiment-analyzer.promptl
+...
 
-```
-get_prompt({ name: "my-prompt" })
-```
-
-Retrieves full PromptL content including config and messages.
-
-### Run a Prompt
-
-```
-run_prompt({ 
-  name: "my-prompt",
-  parameters: { user_name: "Alice" }
-})
+Tip: Edit files locally, then use `add_prompt` to push changes.
 ```
 
-Executes the prompt and returns AI response.
+### Workflow 2: Add New Prompt (with Dynamic Guidance)
 
-### Update a Prompt
-
-```
-replace_prompt({
-  name: "greeting",
-  content: `---
-provider: OpenAI
+```bash
+# The tool description shows you what prompts already exist!
+add_prompt({
+  prompts: [{
+    name: "email-writer",
+    content: `---
+provider: openai
 model: gpt-4o
 ---
-Hello {{ user_name }}!`
+<user>
+Write email to {{ recipient }} about {{ topic }}
+</user>`
+  }],
+  versionName: "feat/add-email-writer"  # Optional git-style naming
 })
 ```
 
-Creates or updates a single prompt in LIVE.
-
-### Get Documentation
-
+**Dynamic Description Shows:**
 ```
-docs({ action: "help" })                    # Overview
-docs({ action: "find", query: "variables" }) # Search
-docs({ action: "get", topic: "chains" })     # Specific topic
+Add or update prompt(s) in LIVE without deleting others.
+
+Available prompts (10): cover-letter-generate, sentiment-analyzer, ...
 ```
 
-Access comprehensive PromptL documentation (52 topics).
+**Result:**
+```
+✅ Prompts Added to LIVE
+
+Summary:
+- Added: 1
+- Updated: 0
+
+Added:
+- email-writer
+
+Current LIVE prompts (11): cover-letter-generate, ..., email-writer
+```
+
+### Workflow 3: Run Prompt (with Parameter Discovery)
+
+```bash
+# The tool description shows you what parameters each prompt needs!
+run_prompt({
+  name: "email-writer",
+  parameters: {
+    recipient: "Alice",
+    topic: "project update"
+  }
+})
+```
+
+**Dynamic Description Shows:**
+```
+Execute a prompt with parameters.
+
+Available prompts (11):
+- cover-letter-generate (params: job_details, career_patterns, company_name)
+- email-writer (params: recipient, topic)
+- sentiment-analyzer (no params)
+...
+```
+
+**Result:**
+```
+✅ Prompt Executed
+
+Prompt: email-writer
+
+Parameters:
+{
+  "recipient": "Alice",
+  "topic": "project update"
+}
+
+Response:
+Subject: Project Update
+
+Dear Alice,
+
+I wanted to share an update on our project...
+
+Tokens: 245 total
+```
+
+### Workflow 4: Validation Catches Errors
+
+```bash
+# Try to add a prompt with nested tags (invalid PromptL)
+add_prompt({
+  prompts: [{
+    name: "broken",
+    content: `---
+model: gpt-4
+---
+<user><assistant>Nested!</assistant></user>`
+  }]
+})
+```
+
+**Validation Error (Before ANY API Call):**
+```
+❌ Validation Failed - No Changes Made
+
+1 prompt(s) have errors. Fix all errors before pushing.
+
+### broken
+Error Code: `message-tag-inside-message`
+Error: Message tags cannot be inside of another message
+Root Cause: Message/role tags (<system>, <user>, <assistant>, <tool>) cannot be nested.
+Location: Line 4, Column 7
+Code Context:
+```
+2: model: gpt-4
+3: ---
+4: <user><assistant>Nested!</assistant></user>
+
+          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+```
+Fix: Move the nested tag outside its parent. Use code block (```yaml) for examples.
+
+Action Required: Fix the errors above, then retry.
+```
+
+### Workflow 5: Full Sync (Initialization)
+
+```bash
+# Push local prompts to LIVE - deletes remote prompts not in your list
+push_prompts({
+  filePaths: [
+    "./prompts/prompt-a.promptl",
+    "./prompts/prompt-b.promptl",
+    "./prompts/prompt-c.promptl"
+  ],
+  versionName: "feat/initial-prompts"  # Optional
+})
+```
+
+**Result:**
+```
+✅ Prompts Pushed to LIVE
+
+Summary:
+- Added: 3
+- Modified: 0
+- Deleted: 8  # Removed old prompts not in your list
+
+Current LIVE prompts (3): prompt-a, prompt-b, prompt-c
+```
 
 ---
 
-## Documentation Topics (52)
+## 📚 Documentation Topics (52)
 
 ### Core Syntax (12)
 `overview`, `structure`, `variables`, `conditionals`, `loops`, `references`, `tools`, `chains`, `agents`, `techniques`, `agent-patterns`, `mocking`
@@ -164,24 +288,48 @@ Access comprehensive PromptL documentation (52 topics).
 
 ---
 
-## Development
+## 🛠️ Development
 
 ### Build
 
 ```bash
-npm run build
+npm run build  # Compiles TypeScript to dist/
 ```
 
-Compiles TypeScript to `dist/`.
-
-### Test with MCP Inspector
+### Testing with MCP Inspector
 
 ```bash
+# List all tools
 npx @modelcontextprotocol/inspector \
   -e LATITUDE_API_KEY=your-key \
   -e LATITUDE_PROJECT_ID=your-id \
   --cli node dist/index.js \
   --method tools/list
+
+# Test list_prompts
+npx @modelcontextprotocol/inspector \
+  -e LATITUDE_API_KEY=your-key \
+  -e LATITUDE_PROJECT_ID=your-id \
+  --cli node dist/index.js \
+  --method tools/call \
+  --tool-name list_prompts
+
+# Test add_prompt with file
+npx @modelcontextprotocol/inspector \
+  -e LATITUDE_API_KEY=your-key \
+  -e LATITUDE_PROJECT_ID=your-id \
+  --cli node dist/index.js \
+  --method tools/call \
+  --tool-name add_prompt \
+  --tool-arg 'filePaths=["./prompts/test.promptl"]'
+
+# Test from npm package
+npx @modelcontextprotocol/inspector \
+  -e LATITUDE_API_KEY=your-key \
+  -e LATITUDE_PROJECT_ID=your-id \
+  --cli npx -y latitude-mcp-server@3.1.0 \
+  --method tools/call \
+  --tool-name list_prompts
 ```
 
 ### Local Development
@@ -193,6 +341,10 @@ node dist/index.js
 
 # With environment variables
 LATITUDE_API_KEY=xxx LATITUDE_PROJECT_ID=yyy node dist/index.js
+
+# Watch mode (requires nodemon)
+npm install -g nodemon
+nodemon --watch src --exec "npm run build && node dist/index.js"
 ```
 
 ---
@@ -281,63 +433,74 @@ Use `docs({ action: "get", topic: "overview" })` for complete guide.
 
 ---
 
-## API Reference
+## 📖 Tool Reference
 
 ### list_prompts()
 
 List all prompts in LIVE version.
 
-**Returns:** Array of prompt names
+**Returns:** Array of prompt names with project ID
+
+**Example:**
+```javascript
+list_prompts()
+// Returns: cover-letter-generate, sentiment-analyzer, email-writer (10 total)
+```
+
+---
 
 ### get_prompt({ name })
 
-Get full prompt content.
+Get full prompt content by name.
 
 **Parameters:**
 - `name` (string) - Prompt name
 
-**Returns:** Prompt content with config and messages
+**Returns:** Full PromptL content with config and messages
+
+**Example:**
+```javascript
+get_prompt({ name: "email-writer" })
+// Returns full .promptl content
+```
+
+---
 
 ### run_prompt({ name, parameters })
 
-Execute a prompt.
+🎯 **Dynamic:** Execute a prompt. Tool description shows all prompts with their parameters!
 
 **Parameters:**
 - `name` (string) - Prompt name
-- `parameters` (object) - Input parameters
+- `parameters` (object, optional) - Input parameters
 
-**Returns:** AI response
+**Returns:** AI response with token usage
 
-### pull_prompts({ outputDir? })
+**Dynamic Description:**
+```
+Available prompts (10):
+- email-writer (params: recipient, topic)
+- sentiment-analyzer (no params)
+- cover-letter-generate (params: job_details, career_patterns, company_name)
+```
 
-Download prompts to local files.
+**Example:**
+```javascript
+run_prompt({
+  name: "email-writer",
+  parameters: { recipient: "Alice", topic: "update" }
+})
+```
 
-**Parameters:**
-- `outputDir` (string, optional) - Output directory (default: `./prompts`)
+---
 
-**Returns:** List of created files
+### add_prompt({ prompts?, filePaths?, versionName? })
 
-### replace_prompt({ name?, content?, filePath? })
+🎯 **Dynamic:** Add or update prompts without deleting others. Tool description shows available prompts!
 
-Replace or create a single prompt. **Shows all available prompts in description.**
+**Behavior:** If prompt exists → overwrites. If new → adds. Never deletes other prompts.
 
-**Parameters (choose one approach):**
-
-**Option A - Direct content:**
-- `name` (string) - Prompt name
-- `content` (string) - Full PromptL content
-
-**Option B - From file:**
-- `filePath` (string) - Path to `.promptl` file (name auto-detected from filename)
-- `name` (string, optional) - Override name from filename
-
-**Returns:** Success confirmation + updated list of all LIVE prompts
-
-### append_prompts({ prompts?, filePaths?, overwrite? })
-
-Add prompts without removing existing ones.
-
-**Parameters (choose one approach):**
+**Parameters (choose one):**
 
 **Option A - Direct content:**
 - `prompts` (array) - Array of `{ name, content }`
@@ -346,15 +509,27 @@ Add prompts without removing existing ones.
 - `filePaths` (array) - Array of paths to `.promptl` files
 
 **Common:**
-- `overwrite` (boolean, optional) - Overwrite existing (default: false)
+- `versionName` (string, optional) - Git-style name like `feat/add-auth` or `fix/typo`
 
-**Returns:** Success confirmation + updated list of all LIVE prompts
+**Returns:** Summary of added/updated prompts
 
-### push_prompts({ prompts?, filePaths? })
+**Example:**
+```javascript
+add_prompt({
+  filePaths: ["./prompts/new-prompt.promptl"],
+  versionName: "feat/add-new-prompt"
+})
+```
 
-⚠️ **Destructive:** Replaces ALL prompts in LIVE.
+---
 
-**Parameters (choose one approach):**
+### push_prompts({ prompts?, filePaths?, versionName? })
+
+🔄 **FULL SYNC:** Replace ALL prompts in LIVE. Deletes remote prompts not in your list.
+
+**Use for:** Initial setup, complete sync, resetting LIVE to match local.
+
+**Parameters (choose one):**
 
 **Option A - Direct content:**
 - `prompts` (array) - Array of `{ name, content }`
@@ -362,89 +537,196 @@ Add prompts without removing existing ones.
 **Option B - From files:**
 - `filePaths` (array) - Array of paths to `.promptl` files
 
-**Returns:** Success confirmation + updated list of all LIVE prompts
+**Common:**
+- `versionName` (string, optional) - Git-style name like `feat/initial-setup`
+
+**Returns:** Summary of added/modified/deleted prompts
+
+**Example:**
+```javascript
+push_prompts({
+  filePaths: ["./prompts/prompt-a.promptl", "./prompts/prompt-b.promptl"],
+  versionName: "feat/complete-rewrite"
+})
+```
+
+---
+
+### pull_prompts({ outputDir? })
+
+🔄 **FULL SYNC:** Download all prompts from LIVE. Deletes existing local `.promptl` files first.
+
+**Use for:** Initial clone, resetting local to match LIVE.
+
+**Parameters:**
+- `outputDir` (string, optional) - Output directory (default: `./prompts`)
+
+**Returns:** List of downloaded files
+
+**Example:**
+```javascript
+pull_prompts({ outputDir: "./my-prompts" })
+```
+
+---
 
 ### docs({ action, topic?, query? })
 
-Get documentation.
+Access comprehensive PromptL documentation (52 topics).
 
 **Parameters:**
-- `action` (string) - `"help"`, `"get"`, or `"find"`
+- `action` (string) - `"help"` (overview), `"get"` (topic), or `"find"` (search)
 - `topic` (string, optional) - Topic name for `"get"`
 - `query` (string, optional) - Search query for `"find"`
 
 **Returns:** Documentation content
 
+**Examples:**
+```javascript
+docs({ action: "help" })                      // Overview
+docs({ action: "find", query: "json output" }) // Semantic search
+docs({ action: "get", topic: "chains" })       // Specific topic
+```
+
 ---
 
-## Examples
+## ✅ Validation Features
 
-### Example 1: Pull → Edit → Push Workflow (Recommended)
+### Client-Side Validation with AST
+
+All write operations (`add_prompt`, `push_prompts`) validate prompts **before** making API calls using the official `promptl-ai` library.
+
+**Benefits:**
+- ⚡ **Fast feedback** - No wasted API calls
+- 🎯 **Precise errors** - Exact line and column numbers
+- 📝 **Code frames** - See surrounding context with `^~~~` pointer
+- 🤖 **LLM-actionable** - Errors include root cause and fix suggestions
+
+### Atomic Operations
+
+**Validate ALL, push ALL or NOTHING:**
 
 ```javascript
-// 1. Pull all prompts to local files
-pull_prompts({ outputDir: "./prompts" })
-// Creates: ./prompts/my-prompt.promptl, ./prompts/other-prompt.promptl, etc.
-
-// 2. Edit files locally in your IDE
-
-// 3. Push single file back (name auto-detected from filename)
-replace_prompt({ filePath: "./prompts/my-prompt.promptl" })
-
-// 4. Or push multiple files
-append_prompts({ 
-  filePaths: ["./prompts/prompt-a.promptl", "./prompts/prompt-b.promptl"],
-  overwrite: true 
+// Trying to push 10 prompts, but 1 has an error
+add_prompt({
+  filePaths: [
+    "./prompts/valid-1.promptl",
+    "./prompts/valid-2.promptl",
+    "./prompts/BROKEN.promptl",  // Has nested tags
+    // ... 7 more valid prompts
+  ]
 })
+
+// Result: NOTHING is pushed
+// Error shows exactly what's wrong in BROKEN.promptl
+// Fix the error, retry → all 10 push successfully
 ```
 
-### Example 2: Create New Prompt
+### Error Message Example
 
-```javascript
-replace_prompt({
-  name: "sentiment-analyzer",
-  content: `---
-provider: OpenAI
-model: gpt-4o
-temperature: 0
-schema:
-  type: object
-  properties:
-    sentiment:
-      type: string
-      enum: [positive, negative, neutral]
-  required: [sentiment]
+```
+❌ Validation Failed - No Changes Made
+
+1 prompt(s) have errors.
+
+### my-prompt
+Error Code: `message-tag-inside-message`
+Error: Message tags cannot be inside of another message
+Root Cause: Message/role tags cannot be nested inside each other.
+Location: Line 107, Column 1
+Code Context:
+```
+105: ## EXAMPLES
+106: 
+107: <assistant>
+
+      ^~~~~~~~~~~~
+108: questions:
+109:   - id: q1
+```
+Fix: Move the nested tag outside its parent. Use code block (```yaml) instead.
+```
+
+### Supported Error Types
+
+- `message-tag-inside-message` - Nested role tags
+- `content-tag-inside-content` - Nested content tags
+- `config-not-found` - Missing YAML frontmatter
+- `invalid-config` - Malformed YAML
+- `unclosed-block` - Missing closing tag
+- `variable-not-defined` - Undefined variable
+- `invalid-tool-call-placement` - Tool call outside `<assistant>`
+- ...and more from official `promptl-ai` compiler
+
 ---
-<system>
-You are a sentiment analysis expert.
-</system>
 
-<user>
-Analyze: {{ text }}
-</user>`
-})
-```
+## 🔄 Migration Guide (v2 → v3)
 
-### Example 3: Run with Parameters
+### Tool Changes
 
+| Old Tool (v2) | New Tool (v3) | Notes |
+|---------------|---------------|-------|
+| `append_prompts` | `add_prompt` | Always overwrites if exists (no `overwrite` param needed) |
+| `replace_prompt` | `add_prompt` | Same behavior, unified tool |
+
+**Migration:**
 ```javascript
-const result = await run_prompt({
-  name: "sentiment-analyzer",
-  parameters: { text: "I love this product!" }
-})
+// OLD (v2)
+append_prompts({ filePaths: [...], overwrite: true })
+replace_prompt({ filePath: "./prompt.promptl" })
 
-// Returns: { sentiment: "positive" }
+// NEW (v3)
+add_prompt({ filePaths: [...] })  // Always overwrites if exists
 ```
 
-### Example 4: Search Documentation
+---
 
-```javascript
-// Find topics about JSON
-docs({ action: "find", query: "json output" })
+## 🔧 Troubleshooting
 
-// Get specific topic
-docs({ action: "get", topic: "config-json-output" })
+### "Validation Failed" Errors
+
+**Problem:** Prompt fails with nested tag error
+
+**Solution:** The error shows exact location with code frame:
 ```
+Error Code: `message-tag-inside-message`
+Location: Line 4, Column 7
+Code Context:
+4: <user><assistant>Nested!</assistant></user>
+          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Fix: Move the nested tag outside its parent.
+```
+
+Follow the fix suggestion - errors are LLM-actionable!
+
+### "No Changes Made" After Push
+
+**Problem:** `push_prompts` reports no changes
+
+**Cause:** All prompts are already up to date (content matches LIVE)
+
+**Solution:** This is normal - no action needed
+
+### Version Naming Best Practices
+
+**Good:**
+- `feat/add-sentiment-analyzer`
+- `fix/typo-in-greeting`
+- `refactor/simplify-prompts`
+- `docs/update-examples`
+
+**Avoid:**
+- `test` (too vague)
+- `update` (what was updated?)
+- `v1.2.3` (use semantic versioning elsewhere)
+
+### Dynamic Descriptions Not Updating
+
+**Problem:** Tool descriptions show old prompt list
+
+**Cause:** Cache not refreshed (30s TTL)
+
+**Solution:** Wait 30 seconds or restart MCP server
 
 ---
 
