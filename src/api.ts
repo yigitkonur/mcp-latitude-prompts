@@ -312,8 +312,32 @@ function formatSFTimestamp(prefix?: string): string {
 }
 
 /**
+ * Push changes to a version using the push endpoint
+ */
+async function pushChangesToVersion(
+	versionUuid: string,
+	changes: DocumentChange[]
+): Promise<void> {
+	const projectId = getProjectId();
+	const apiChanges = changes.map((c) => ({
+		path: c.path,
+		content: c.content,
+		status: c.status,
+	}));
+	
+	logger.debug(`Pushing ${changes.length} change(s) to version ${versionUuid}`);
+	await request<void>(
+		`/projects/${projectId}/versions/${versionUuid}/push`,
+		{
+			method: 'POST',
+			body: { changes: apiChanges },
+		}
+	);
+}
+
+/**
  * Deploy changes to LIVE version
- * Creates a draft → applies changes → publishes to LIVE
+ * Creates a draft → pushes changes → publishes to LIVE
  */
 export async function deployToLive(
 	changes: DocumentChange[],
@@ -321,38 +345,23 @@ export async function deployToLive(
 ): Promise<DeployResult> {
 	const name = versionName || formatSFTimestamp();
 
+	// Step 1: Create a new draft version
 	logger.info(`Creating draft: ${name}`);
 	const version = await createVersion(name);
 
-	const added: string[] = [];
-	const modified: string[] = [];
-	const deleted: string[] = [];
+	// Step 2: Push all changes to the draft using the push endpoint
+	logger.info(`Pushing ${changes.length} change(s) to draft...`);
+	await pushChangesToVersion(version.uuid, changes);
 
-	// Apply each change individually
-	for (const change of changes) {
-		logger.debug(`Processing: ${change.status} ${change.path}`);
-
-		if (change.status === 'deleted') {
-			try {
-				await deleteDocument(version.uuid, change.path);
-				deleted.push(change.path);
-			} catch (error) {
-				// Document might not exist, log and continue
-				logger.warn(`Failed to delete ${change.path}:`, error);
-			}
-		} else {
-			await createOrUpdateDocument(version.uuid, change.path, change.content);
-			if (change.status === 'added') {
-				added.push(change.path);
-			} else {
-				modified.push(change.path);
-			}
-		}
-	}
-
+	// Step 3: Publish the draft to LIVE
 	logger.info(`Publishing version ${version.uuid} to LIVE with title: ${name}`);
 	const published = await publishVersion(version.uuid, name);
 	logger.info(`Published! Version is now LIVE: ${published.uuid}`);
+
+	// Categorize changes for return value
+	const added = changes.filter((c) => c.status === 'added').map((c) => c.path);
+	const modified = changes.filter((c) => c.status === 'modified').map((c) => c.path);
+	const deleted = changes.filter((c) => c.status === 'deleted').map((c) => c.path);
 
 	return {
 		version: published,
