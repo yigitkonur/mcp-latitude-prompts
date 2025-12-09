@@ -282,8 +282,9 @@ export async function runDocument(
 
 /**
  * Format timestamp in San Francisco time: "14 Jan 2025 - 13:11"
+ * Optionally prepend action prefix like "append research-validate"
  */
-function formatSFTimestamp(): string {
+function formatSFTimestamp(prefix?: string): string {
 	const now = new Date();
 	const options: Intl.DateTimeFormatOptions = {
 		timeZone: 'America/Los_Angeles',
@@ -297,11 +298,14 @@ function formatSFTimestamp(): string {
 	const formatted = now.toLocaleString('en-US', options);
 	// "Jan 14, 2025, 13:11" → "14 Jan 2025 - 13:11"
 	const match = formatted.match(/(\w+)\s+(\d+),\s+(\d+),\s+(\d+:\d+)/);
-	if (match) {
-		return `${match[2]} ${match[1]} ${match[3]} - ${match[4]}`;
+	let timestamp = match 
+		? `${match[2]} ${match[1]} ${match[3]} - ${match[4]}`
+		: now.toISOString().replace(/[:.]/g, '-');
+	
+	if (prefix) {
+		return `${prefix} (${timestamp})`;
 	}
-	// Fallback
-	return now.toISOString().replace(/[:.]/g, '-');
+	return timestamp;
 }
 
 /**
@@ -343,8 +347,9 @@ export async function deployToLive(
 		}
 	}
 
-	logger.info(`Publishing to LIVE`);
+	logger.info(`Publishing version ${version.uuid} to LIVE...`);
 	const published = await publishVersion(version.uuid);
+	logger.info(`Published! Version is now LIVE: ${published.uuid}`);
 
 	return {
 		version: published,
