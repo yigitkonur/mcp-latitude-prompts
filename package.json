@@ -1,6 +1,6 @@
 {
 	"name": "latitude-mcp-server",
-	"version": "3.0.1",
+	"version": "3.1.0",
 	"description": "Simplified MCP server for Latitude.so prompt management - 8 focused tools for push, pull, run, and manage prompts",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

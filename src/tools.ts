@@ -1,15 +1,14 @@
 /**
  * MCP Tools for Latitude
  *
- * 8 Tools:
- * - list_prompts   : List all prompt names in LIVE
- * - get_prompt     : Get full prompt content by name
- * - run_prompt     : Execute a prompt with parameters
- * - push_prompts   : FULL SYNC to remote (adds, modifies, DELETES remote prompts not in local)
- * - pull_prompts   : FULL SYNC from remote (deletes ALL local, downloads ALL from LIVE)
- * - append_prompts : ADDITIVE only (adds new, optionally updates existing, NEVER deletes)
- * - replace_prompt : Replace/create a single prompt (supports file path)
- * - docs           : Documentation (help, get topic, find query)
+ * 7 Tools:
+ * - list_prompts : List all prompt names in LIVE
+ * - get_prompt   : Get full prompt content by name
+ * - run_prompt   : Execute a prompt with parameters (dynamic prompt list + variables)
+ * - push_prompts : FULL SYNC to remote (adds, modifies, DELETES remote prompts not in local)
+ * - pull_prompts : FULL SYNC from remote (deletes ALL local, downloads ALL from LIVE)
+ * - add_prompt   : ADDITIVE - add/overwrite prompts without deleting others (dynamic prompt list)
+ * - docs         : Documentation (help, get topic, find query)
  */
 
 import { z } from 'zod';
@@ -142,6 +141,85 @@ function formatAvailablePrompts(names: string[]): string {
 	
 	const formatted = names.map(n => `\`${n}\``).join(', ');
 	return `\n\n**Available prompts (${names.length}):** ${formatted}`;
+}
+
+/**
+ * Extract variable names from prompt content
+ * Looks for {{ variable }} and { variable } patterns
+ */
+function extractVariables(content: string): string[] {
+	const variables = new Set<string>();
+	
+	// Match {{ variable }} and { variable } patterns (PromptL syntax)
+	const patterns = [
+		/\{\{\s*(\w+)\s*\}\}/g,  // {{ variable }}
+		/\{\s*(\w+)\s*\}/g,      // { variable }
+	];
+	
+	for (const pattern of patterns) {
+		let match;
+		while ((match = pattern.exec(content)) !== null) {
+			// Exclude control flow keywords
+			const varName = match[1];
+			if (!['if', 'else', 'each', 'let', 'end', 'for', 'unless'].includes(varName)) {
+				variables.add(varName);
+			}
+		}
+	}
+	
+	return Array.from(variables);
+}
+
+/**
+ * Build dynamic description for run_prompt with prompt names and their variables
+ */
+async function buildRunPromptDescription(): Promise<string> {
+	const names = await getCachedPromptNames();
+	
+	let desc = 'Execute a prompt with parameters.';
+	
+	if (names.length === 0) {
+		desc += '\n\n**No prompts in LIVE yet.**';
+		return desc;
+	}
+	
+	desc += `\n\n**Available prompts (${names.length}):**`;
+	
+	// Fetch each prompt to get its variables (limit to avoid too long description)
+	const maxToShow = Math.min(names.length, 10);
+	for (let i = 0; i < maxToShow; i++) {
+		try {
+			const doc = await getDocument(names[i], 'live');
+			const vars = extractVariables(doc.content);
+			if (vars.length > 0) {
+				desc += `\n- \`${names[i]}\` (params: ${vars.map(v => `\`${v}\``).join(', ')})`;
+			} else {
+				desc += `\n- \`${names[i]}\` (no params)`;
+			}
+		} catch {
+			desc += `\n- \`${names[i]}\``;
+		}
+	}
+	
+	if (names.length > maxToShow) {
+		desc += `\n- ... and ${names.length - maxToShow} more`;
+	}
+	
+	return desc;
+}
+
+/**
+ * Build dynamic description for add_prompt with available prompts
+ */
+async function buildAddPromptDescription(): Promise<string> {
+	const names = await getCachedPromptNames();
+	
+	let desc = 'Add or update prompt(s) in LIVE without deleting others. ';
+	desc += 'If a prompt with the same name exists, it will be overwritten. ';
+	desc += 'Provide `prompts` array OR `filePaths` to .promptl files.';
+	desc += formatAvailablePrompts(names);
+	
+	return desc;
 }
 
 // ============================================================================
@@ -408,7 +486,7 @@ async function handlePushPrompts(args: {
 	}
 }
 
-const AppendPromptsSchema = z.object({
+const AddPromptSchema = z.object({
 	prompts: z
 		.array(
 			z.object({
@@ -417,22 +495,16 @@ const AppendPromptsSchema = z.object({
 			})
 		)
 		.optional()
-		.describe('Prompts to append - ADDITIVE: keeps existing prompts, adds new ones'),
+		.describe('Prompts to add/update - overwrites if exists, adds if new'),
 	filePaths: z
 		.array(z.string())
 		.optional()
-		.describe('File paths to .promptl files - ADDITIVE: never deletes existing prompts'),
-	overwrite: z
-		.boolean()
-		.optional()
-		.default(false)
-		.describe('If true, update existing prompts with same name (still no deletions)'),
+		.describe('File paths to .promptl files - overwrites if exists, adds if new'),
 });
 
-async function handleAppendPrompts(args: {
+async function handleAddPrompt(args: {
 	prompts?: Array<{ name: string; content: string }>;
 	filePaths?: string[];
-	overwrite?: boolean;
 }): Promise<ToolResult> {
 	try {
 		// Build prompts from either direct input or file paths
@@ -451,9 +523,9 @@ async function handleAppendPrompts(args: {
 			return formatError(new Error('No prompts provided. Use either prompts array or filePaths.'));
 		}
 
-		// PRE-VALIDATE ALL PROMPTS BEFORE APPENDING
-		// If ANY prompt fails validation, return errors and append NOTHING
-		logger.info(`Validating ${prompts.length} prompt(s) before append...`);
+		// PRE-VALIDATE ALL PROMPTS BEFORE ADDING
+		// If ANY prompt fails validation, return errors and add NOTHING
+		logger.info(`Validating ${prompts.length} prompt(s) before add...`);
 		const validation = await validateAllPrompts(prompts);
 		
 		if (!validation.valid) {
@@ -466,27 +538,22 @@ async function handleAppendPrompts(args: {
 		const existingDocs = await listDocuments('live');
 		const existingMap = new Map(existingDocs.map((d) => [d.path, d]));
 
-		// Build changes - append does NOT delete existing prompts
+		// Build changes - ALWAYS overwrite if exists, add if new, NEVER delete
 		const changes: DocumentChange[] = [];
-		const skipped: string[] = [];
 
 		for (const prompt of prompts) {
 			const existingDoc = existingMap.get(prompt.name);
 
 			if (existingDoc) {
-				if (args.overwrite) {
-					// Only include if content is different
-					if (existingDoc.content !== prompt.content) {
-						changes.push({
-							path: prompt.name,
-							content: prompt.content,
-							status: 'modified',
-						});
-					}
-					// If same content, skip silently (unchanged)
-				} else {
-					skipped.push(prompt.name);
+				// Only include if content is different
+				if (existingDoc.content !== prompt.content) {
+					changes.push({
+						path: prompt.name,
+						content: prompt.content,
+						status: 'modified',
+					});
 				}
+				// If same content, skip silently (unchanged)
 			} else {
 				// New prompt
 				changes.push({
@@ -501,7 +568,7 @@ async function handleAppendPrompts(args: {
 		const added = changes.filter((c: DocumentChange) => c.status === 'added');
 		const modified = changes.filter((c: DocumentChange) => c.status === 'modified');
 
-		if (changes.length === 0 && skipped.length === 0) {
+		if (changes.length === 0) {
 			const newNames = await forceRefreshAndGetNames();
 			return formatSuccess('No Changes Needed', 
 				`All ${prompts.length} prompt(s) are already up to date.\n\n` +
@@ -509,16 +576,9 @@ async function handleAppendPrompts(args: {
 			);
 		}
 
-		if (changes.length === 0) {
-			const newNames = await forceRefreshAndGetNames();
-			let content = `**Skipped:** ${skipped.length} (already exist, use overwrite=true to update)\n`;
-			content += `\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
-			return formatSuccess('No Changes Made', content);
-		}
-
 		// Push all changes in one batch
 		try {
-			const result = await deployToLive(changes, 'append');
+			const result = await deployToLive(changes, 'add');
 			
 			// Force refresh cache after mutations
 			const newNames = await forceRefreshAndGetNames();
@@ -526,9 +586,6 @@ async function handleAppendPrompts(args: {
 			let content = `**Summary:**\n`;
 			content += `- Added: ${added.length}\n`;
 			content += `- Updated: ${modified.length}\n`;
-			if (skipped.length > 0) {
-				content += `- Skipped: ${skipped.length} (use overwrite=true)\n`;
-			}
 			content += `- Documents processed: ${result.documentsProcessed}\n\n`;
 			
 			if (added.length > 0) {
@@ -537,13 +594,10 @@ async function handleAppendPrompts(args: {
 			if (modified.length > 0) {
 				content += `### Updated\n${modified.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
 			}
-			if (skipped.length > 0) {
-				content += `### Skipped (already exist)\n${skipped.map(n => `- \`${n}\``).join('\n')}\n\n`;
-			}
 			
 			content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
 
-			return formatSuccess('Prompts Appended to LIVE', content);
+			return formatSuccess('Prompts Added to LIVE', content);
 		} catch (error) {
 			// Detailed error from API
 			if (error instanceof LatitudeApiError) {
@@ -610,107 +664,9 @@ async function handlePullPrompts(args: {
 		content += `**Written:** ${written.length} file(s)\n\n`;
 		content += `### Files\n\n`;
 		content += written.map((f) => `- \`${f}\``).join('\n');
-		content += `\n\n**Tip:** Edit files locally, then use \`replace_prompt\` with \`filePath\` to push changes.`;
+		content += `\n\n**Tip:** Edit files locally, then use \`add_prompt\` with \`filePaths\` to push changes.`;
 
 		return formatSuccess('Prompts Pulled from LIVE', content);
-	} catch (error) {
-		return formatError(error);
-	}
-}
-
-// Dynamic description builder for replace_prompt
-async function buildReplacePromptDescription(): Promise<string> {
-	const names = await getCachedPromptNames();
-	
-	let desc = 'Replace or create a single prompt in LIVE. ';
-	desc += 'Provide either `content` directly or `filePath` to read from local file.';
-	desc += formatAvailablePrompts(names);
-	
-	return desc;
-}
-
-const ReplacePromptSchema = z.object({
-	name: z
-		.string()
-		.optional()
-		.describe('Prompt name to replace (auto-detected from filePath if not provided)'),
-	content: z
-		.string()
-		.optional()
-		.describe('New prompt content (alternative to filePath)'),
-	filePath: z
-		.string()
-		.optional()
-		.describe('Path to .promptl file to read content from (alternative to content)'),
-});
-
-async function handleReplacePrompt(args: {
-	name?: string;
-	content?: string;
-	filePath?: string;
-}): Promise<ToolResult> {
-	try {
-		let name = args.name;
-		let content = args.content;
-
-		// If filePath provided, read from file
-		if (args.filePath) {
-			const fileData = readPromptFile(args.filePath);
-			content = fileData.content;
-			// Use filename as name if not explicitly provided
-			if (!name) {
-				name = fileData.name;
-			}
-		}
-
-		// Validate we have both name and content
-		if (!name) {
-			return formatError(new Error('Prompt name is required. Provide `name` or use `filePath` (name derived from filename).'));
-		}
-		if (!content) {
-			return formatError(new Error('Prompt content is required. Provide either `content` or `filePath`.'));
-		}
-
-		// PRE-VALIDATE PROMPT BEFORE REPLACING
-		// If validation fails, return error and replace NOTHING
-		logger.info(`Validating prompt "${name}" before replace...`);
-		const validation = await validateAllPrompts([{ name, content }]);
-		
-		if (!validation.valid) {
-			logger.warn(`Validation failed for prompt "${name}"`);
-			return formatValidationErrors(validation.errors);
-		}
-		logger.info(`Prompt "${name}" passed validation`);
-
-		// Check if prompt exists
-		const existingDocs = await listDocuments('live');
-		const exists = existingDocs.some((d: { path: string }) => d.path === name);
-
-		const changes: DocumentChange[] = [
-			{
-				path: name,
-				content: content,
-				status: exists ? 'modified' : 'added',
-			},
-		];
-
-		// Deploy to LIVE (creates branch → pushes → publishes)
-		const { version } = await deployToLive(changes, `replace ${name}`);
-
-		// Force refresh cache after mutation
-		const newNames = await forceRefreshAndGetNames();
-
-		const action = exists ? 'Replaced' : 'Created';
-		let result = `**Prompt:** \`${name}\`\n`;
-		result += `**Action:** ${action}\n`;
-		result += `**Version:** \`${version.uuid}\`\n`;
-		if (args.filePath) {
-			result += `**Source:** \`${args.filePath}\`\n`;
-		}
-		result += `\n### Content Preview\n\n\`\`\`promptl\n${content.substring(0, 500)}${content.length > 500 ? '...' : ''}\n\`\`\``;
-		result += `\n\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
-
-		return formatSuccess(`Prompt ${action}`, result);
 	} catch (error) {
 		return formatError(error);
 	}
@@ -795,11 +751,13 @@ export async function registerTools(server: McpServer): Promise<void> {
 		handleGetPrompt as (args: Record<string, unknown>) => Promise<ToolResult>
 	);
 
+	// Build dynamic description with prompt names and their variables
+	const runDesc = await buildRunPromptDescription();
 	server.registerTool(
 		'run_prompt',
 		{
 			title: 'Run Prompt',
-			description: 'Execute a prompt with parameters',
+			description: runDesc,
 			inputSchema: RunPromptSchema,
 		},
 		handleRunPrompt as (args: Record<string, unknown>) => Promise<ToolResult>
@@ -808,46 +766,35 @@ export async function registerTools(server: McpServer): Promise<void> {
 	server.registerTool(
 		'push_prompts',
 		{
-			title: 'Push Prompts',
+			title: 'Push Prompts (FULL SYNC)',
 			description:
-				'Replace ALL prompts in LIVE. Provide `prompts` array OR `filePaths` to .promptl files. Creates branch → pushes → publishes automatically.',
+				'FULL SYNC: Replace ALL prompts in LIVE. Deletes remote prompts not in your list. Use for initialization or complete sync.',
 			inputSchema: PushPromptsSchema,
 		},
 		handlePushPrompts as (args: Record<string, unknown>) => Promise<ToolResult>
 	);
 
 	server.registerTool(
-		'append_prompts',
-		{
-			title: 'Append Prompts',
-			description:
-				'Add prompts to LIVE without removing existing. Provide `prompts` array OR `filePaths`. Use overwrite=true to replace existing.',
-			inputSchema: AppendPromptsSchema,
-		},
-		handleAppendPrompts as (args: Record<string, unknown>) => Promise<ToolResult>
-	);
-
-	server.registerTool(
 		'pull_prompts',
 		{
-			title: 'Pull Prompts',
+			title: 'Pull Prompts (FULL SYNC)',
 			description:
-				'Download all prompts from LIVE to local ./prompts/*.promptl files',
+				'FULL SYNC: Download all prompts from LIVE to local ./prompts/*.promptl files. Deletes existing local files first.',
 			inputSchema: PullPromptsSchema,
 		},
 		handlePullPrompts as (args: Record<string, unknown>) => Promise<ToolResult>
 	);
 
 	// Build dynamic description with available prompts
-	const replaceDesc = await buildReplacePromptDescription();
+	const addDesc = await buildAddPromptDescription();
 	server.registerTool(
-		'replace_prompt',
+		'add_prompt',
 		{
-			title: 'Replace Prompt',
-			description: replaceDesc,
-			inputSchema: ReplacePromptSchema,
+			title: 'Add/Update Prompt',
+			description: addDesc,
+			inputSchema: AddPromptSchema,
 		},
-		handleReplacePrompt as (args: Record<string, unknown>) => Promise<ToolResult>
+		handleAddPrompt as (args: Record<string, unknown>) => Promise<ToolResult>
 	);
 
 	server.registerTool(
@@ -861,5 +808,5 @@ export async function registerTools(server: McpServer): Promise<void> {
 		handleDocs as (args: Record<string, unknown>) => Promise<ToolResult>
 	);
 
-	logger.info(`Registered 8 MCP tools (${cachedPromptNames.length} prompts cached)`);
+	logger.info(`Registered 7 MCP tools (${cachedPromptNames.length} prompts cached)`);
 }
