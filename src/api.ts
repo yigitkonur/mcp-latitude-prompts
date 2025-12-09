@@ -97,7 +97,17 @@ async function request<T>(
 			let errorData: LatitudeError;
 
 			try {
-				errorData = JSON.parse(errorText);
+				const parsed = JSON.parse(errorText);
+				// Capture the ENTIRE parsed response as details
+				// This ensures we never lose any error information from the API
+				const { name, errorCode, code, message, ...rest } = parsed;
+				errorData = {
+					name: name || 'APIError',
+					errorCode: errorCode || code || `HTTP_${response.status}`,
+					message: message || `HTTP ${response.status}`,
+					// Store ALL remaining fields as details
+					details: Object.keys(rest).length > 0 ? rest : undefined,
+				};
 			} catch {
 				errorData = {
 					name: 'HTTPError',
@@ -106,7 +116,8 @@ async function request<T>(
 				};
 			}
 
-			throw new LatitudeApiError(errorData, response.status);
+			logger.debug(`API error response: ${errorText}`);
+			throw new LatitudeApiError(errorData, response.status, errorText);
 		}
 
 		// Handle empty responses
@@ -153,13 +164,85 @@ export class LatitudeApiError extends Error {
 	public readonly errorCode: string;
 	public readonly statusCode: number;
 	public readonly details?: Record<string, unknown>;
+	public readonly rawResponse?: string;
 
-	constructor(error: LatitudeError, statusCode: number) {
+	constructor(error: LatitudeError, statusCode: number, rawResponse?: string) {
 		super(error.message);
 		this.name = error.name;
 		this.errorCode = error.errorCode;
 		this.statusCode = statusCode;
 		this.details = error.details;
+		this.rawResponse = rawResponse;
+	}
+
+	/**
+	 * Extract detailed error messages from nested error structures
+	 */
+	getDetailedErrors(): string[] {
+		const errors: string[] = [];
+		
+		if (!this.details) return errors;
+
+		// Handle errors array in details
+		if (Array.isArray(this.details.errors)) {
+			for (const err of this.details.errors) {
+				if (typeof err === 'string') {
+					errors.push(err);
+				} else if (err && typeof err === 'object') {
+					const errObj = err as Record<string, unknown>;
+					const msg = errObj.message || errObj.error || errObj.detail || JSON.stringify(err);
+					const path = errObj.path || errObj.document || errObj.name || '';
+					errors.push(path ? `${path}: ${msg}` : String(msg));
+				}
+			}
+		}
+
+		// Handle documents with errors
+		if (this.details.documents && typeof this.details.documents === 'object') {
+			const docs = this.details.documents as Record<string, unknown>;
+			for (const [docPath, docInfo] of Object.entries(docs)) {
+				if (docInfo && typeof docInfo === 'object') {
+					const info = docInfo as Record<string, unknown>;
+					if (info.error || info.errors) {
+						const docErrors = info.errors || [info.error];
+						for (const e of Array.isArray(docErrors) ? docErrors : [docErrors]) {
+							errors.push(`${docPath}: ${typeof e === 'string' ? e : JSON.stringify(e)}`);
+						}
+					}
+				}
+			}
+		}
+
+		// Handle validation errors object
+		if (this.details.validationErrors && typeof this.details.validationErrors === 'object') {
+			const valErrors = this.details.validationErrors as Record<string, unknown>;
+			for (const [field, fieldErrors] of Object.entries(valErrors)) {
+				if (Array.isArray(fieldErrors)) {
+					for (const fe of fieldErrors) {
+						errors.push(`${field}: ${typeof fe === 'string' ? fe : JSON.stringify(fe)}`);
+					}
+				} else {
+					errors.push(`${field}: ${typeof fieldErrors === 'string' ? fieldErrors : JSON.stringify(fieldErrors)}`);
+				}
+			}
+		}
+
+		// Handle cause field
+		if (this.details.cause) {
+			const cause = this.details.cause;
+			if (typeof cause === 'string') {
+				errors.push(cause);
+			} else if (typeof cause === 'object') {
+				const causeObj = cause as Record<string, unknown>;
+				if (causeObj.message) {
+					errors.push(String(causeObj.message));
+				} else {
+					errors.push(JSON.stringify(cause));
+				}
+			}
+		}
+
+		return errors;
 	}
 
 	toMarkdown(): string {
@@ -171,11 +254,48 @@ export class LatitudeApiError extends Error {
 			md += `\n**HTTP Status:** ${this.statusCode}\n`;
 		}
 
+		// Try to extract detailed errors first
+		const detailedErrors = this.getDetailedErrors();
+		if (detailedErrors.length > 0) {
+			md += `\n**Detailed Errors (${detailedErrors.length}):**\n`;
+			for (const err of detailedErrors) {
+				md += `- ${err}\n`;
+			}
+		}
+
+		// Always show details if present (structured data from API)
 		if (this.details && Object.keys(this.details).length > 0) {
-			md += `\n**Details:**\n\`\`\`json\n${JSON.stringify(this.details, null, 2)}\n\`\`\`\n`;
+			md += `\n**API Response Details:**\n\`\`\`json\n${JSON.stringify(this.details, null, 2)}\n\`\`\`\n`;
+		}
+
+		// Always show raw response if available (for debugging)
+		if (this.rawResponse && this.rawResponse !== JSON.stringify(this.details)) {
+			md += `\n**Raw API Response:**\n\`\`\`json\n${this.rawResponse}\n\`\`\`\n`;
 		}
 
 		return md;
+	}
+
+	/**
+	 * Get a concise error message suitable for per-prompt error tracking
+	 */
+	getConciseMessage(): string {
+		const detailed = this.getDetailedErrors();
+		if (detailed.length > 0) {
+			return detailed.join('; ');
+		}
+		// If no detailed errors, include details summary if available
+		if (this.details && Object.keys(this.details).length > 0) {
+			return `${this.message} | Details: ${JSON.stringify(this.details)}`;
+		}
+		// Last resort: include raw response snippet
+		if (this.rawResponse) {
+			const snippet = this.rawResponse.length > 200 
+				? this.rawResponse.substring(0, 200) + '...' 
+				: this.rawResponse;
+			return `${this.message} | Raw: ${snippet}`;
+		}
+		return this.message;
 	}
 }
 
@@ -264,6 +384,104 @@ export async function deleteDocument(
 	);
 }
 
+/**
+ * Push response from the API
+ */
+interface PushResponse {
+	versionUuid: string;
+	documentsProcessed: number;
+}
+
+/**
+ * Push changes to a version in a single batch
+ * This is the CLI-style push that sends all changes at once
+ */
+export async function pushChanges(
+	versionUuid: string,
+	changes: DocumentChange[]
+): Promise<PushResponse> {
+	const projectId = getProjectId();
+	
+	// Format changes for the API
+	const apiChanges = changes.map((c) => ({
+		path: c.path,
+		content: c.content || '',
+		status: c.status,
+	}));
+	
+	logger.info(`Pushing ${changes.length} change(s) to version ${versionUuid}`);
+	
+	return request<PushResponse>(
+		`/projects/${projectId}/versions/${versionUuid}/push`,
+		{
+			method: 'POST',
+			body: { changes: apiChanges },
+		}
+	);
+}
+
+/**
+ * Compute hash of content for diff comparison
+ */
+export function hashContent(content: string): string {
+	// Simple hash - in production you might want crypto
+	let hash = 0;
+	for (let i = 0; i < content.length; i++) {
+		const char = content.charCodeAt(i);
+		hash = ((hash << 5) - hash) + char;
+		hash = hash & hash; // Convert to 32bit integer
+	}
+	return hash.toString(16);
+}
+
+/**
+ * Compute diff between incoming prompts and existing prompts
+ * Returns only the changes that need to be made
+ */
+export function computeDiff(
+	incoming: Array<{ path: string; content: string }>,
+	existing: Document[]
+): DocumentChange[] {
+	const changes: DocumentChange[] = [];
+	const existingMap = new Map(existing.map((d) => [d.path, d]));
+	const incomingPaths = new Set(incoming.map((p) => p.path));
+
+	// Check each incoming prompt
+	for (const prompt of incoming) {
+		const existingDoc = existingMap.get(prompt.path);
+		
+		if (!existingDoc) {
+			// New prompt
+			changes.push({
+				path: prompt.path,
+				content: prompt.content,
+				status: 'added',
+			});
+		} else if (existingDoc.content !== prompt.content) {
+			// Modified prompt
+			changes.push({
+				path: prompt.path,
+				content: prompt.content,
+				status: 'modified',
+			});
+		}
+		// If content is same, no change needed (don't include in changes)
+	}
+
+	// Check for deleted prompts (exist remotely but not in incoming)
+	for (const path of existingMap.keys()) {
+		if (!incomingPaths.has(path)) {
+			changes.push({
+				path,
+				content: '',
+				status: 'deleted',
+			});
+		}
+	}
+
+	return changes;
+}
+
 export async function runDocument(
 	path: string,
 	parameters?: Record<string, unknown>,
@@ -285,49 +503,93 @@ export async function runDocument(
 }
 
 /**
- * Deploy changes directly to LIVE version using force mode
- * This bypasses the draft->publish workflow which requires provider validation
+ * Format timestamp for version names: "14 Jan 2025 - 13:11"
+ * Optionally prepend action prefix like "push cover-letter"
+ */
+function formatVersionName(prefix?: string): string {
+	const now = new Date();
+	const options: Intl.DateTimeFormatOptions = {
+		timeZone: 'America/Los_Angeles',
+		day: 'numeric',
+		month: 'short',
+		year: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+		hour12: false,
+	};
+	const formatted = now.toLocaleString('en-US', options);
+	// "Jan 14, 2025, 13:11" → "14 Jan 2025 - 13:11"
+	const match = formatted.match(/(\w+)\s+(\d+),\s+(\d+),\s+(\d+:\d+)/);
+	const timestamp = match 
+		? `${match[2]} ${match[1]} ${match[3]} - ${match[4]}`
+		: now.toISOString().replace(/[:.]/g, '-');
+	
+	return prefix ? `${prefix} (${timestamp})` : timestamp;
+}
+
+/**
+ * Deploy changes to LIVE version using the proper workflow:
+ * 1. Create a draft version
+ * 2. Push all changes to the draft (batch)
+ * 3. Publish the draft to make it LIVE
+ * 
+ * This is the same workflow the CLI uses, ensuring proper validation.
  */
 export async function deployToLive(
 	changes: DocumentChange[],
-	_versionName?: string
+	versionName?: string
 ): Promise<DeployResult> {
-	const added: string[] = [];
-	const modified: string[] = [];
-	const deleted: string[] = [];
-
-	// Process each change directly to LIVE with force=true
-	for (const change of changes) {
-		logger.info(`Deploying ${change.status}: ${change.path}`);
-
-		if (change.status === 'deleted') {
-			try {
-				await deleteDocument('live', change.path);
-				deleted.push(change.path);
-				logger.debug(`Deleted: ${change.path}`);
-			} catch (error) {
-				// Document might not exist, log and continue
-				logger.warn(`Failed to delete ${change.path}:`, error);
-			}
-		} else {
-			// Use force=true to push directly to LIVE
-			await createOrUpdateDocument('live', change.path, change.content, true);
-			if (change.status === 'added') {
-				added.push(change.path);
-			} else {
-				modified.push(change.path);
-			}
-			logger.debug(`${change.status}: ${change.path}`);
-		}
+	if (changes.length === 0) {
+		logger.info('No changes to deploy');
+		return {
+			version: { uuid: 'live' } as Version,
+			documentsProcessed: 0,
+			added: [],
+			modified: [],
+			deleted: [],
+		};
 	}
 
-	// Get current LIVE version info
-	const docs = await listDocuments('live');
-	const liveVersionUuid = docs.length > 0 ? docs[0].versionUuid : 'live';
+	// Filter out unchanged items (they shouldn't be sent to API)
+	const actualChanges = changes.filter(c => c.status !== 'unchanged');
+	
+	if (actualChanges.length === 0) {
+		logger.info('All prompts are unchanged, nothing to deploy');
+		return {
+			version: { uuid: 'live' } as Version,
+			documentsProcessed: 0,
+			added: [],
+			modified: [],
+			deleted: [],
+		};
+	}
+
+	// Categorize changes for logging and return value
+	const added = actualChanges.filter((c) => c.status === 'added').map((c) => c.path);
+	const modified = actualChanges.filter((c) => c.status === 'modified').map((c) => c.path);
+	const deleted = actualChanges.filter((c) => c.status === 'deleted').map((c) => c.path);
+	
+	const name = versionName || formatVersionName();
+	logger.info(`Deploying to LIVE: ${added.length} added, ${modified.length} modified, ${deleted.length} deleted`);
+
+	// Step 1: Create a new draft version
+	logger.info(`Creating draft version: ${name}`);
+	const draft = await createVersion(name);
+	logger.info(`Draft created: ${draft.uuid}`);
+
+	// Step 2: Push all changes to the draft in ONE batch
+	logger.info(`Pushing ${actualChanges.length} change(s) to draft...`);
+	const pushResult = await pushChanges(draft.uuid, actualChanges);
+	logger.info(`Push complete: ${pushResult.documentsProcessed} documents processed`);
+
+	// Step 3: Publish the draft to make it LIVE
+	logger.info(`Publishing draft ${draft.uuid} to LIVE...`);
+	const published = await publishVersion(draft.uuid, name);
+	logger.info(`Published successfully! Version is now LIVE: ${published.uuid}`);
 
 	return {
-		version: { uuid: liveVersionUuid } as Version,
-		documentsProcessed: changes.length,
+		version: published,
+		documentsProcessed: pushResult.documentsProcessed,
 		added,
 		modified,
 		deleted,

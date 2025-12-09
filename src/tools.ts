@@ -31,6 +31,7 @@ import {
 	getDocument,
 	runDocument,
 	deployToLive,
+	computeDiff,
 } from './api.js';
 import { getHelp, getDocs, findDocs } from './docs.js';
 import type { DocumentChange } from './types.js';
@@ -257,59 +258,62 @@ async function handlePushPrompts(args: {
 			return formatError(new Error('No prompts provided. Use either prompts array or filePaths.'));
 		}
 
-		// Get existing prompts to delete
+		// Get existing prompts for diff computation
 		const existingDocs = await listDocuments('live');
-		const existingNames = existingDocs.map((d: { path: string }) => d.path);
+		
+		// Compute diff - this determines what needs to be added, modified, or deleted
+		const incoming = prompts.map(p => ({ path: p.name, content: p.content }));
+		const changes = computeDiff(incoming, existingDocs);
 
-		// Step 1: Delete all existing prompts in one batch (deletions are small)
-		if (existingNames.length > 0) {
-			const deleteChanges: DocumentChange[] = existingNames.map((name) => ({
-				path: name,
-				content: '',
-				status: 'deleted' as const,
-			}));
-			await deployToLive(deleteChanges, 'push (delete existing)');
+		// Summarize changes
+		const added = changes.filter((c: DocumentChange) => c.status === 'added');
+		const modified = changes.filter((c: DocumentChange) => c.status === 'modified');
+		const deleted = changes.filter((c: DocumentChange) => c.status === 'deleted');
+
+		if (changes.length === 0) {
+			const newNames = await forceRefreshAndGetNames();
+			return formatSuccess('No Changes Needed', 
+				`All ${prompts.length} prompt(s) are already up to date.\n\n` +
+				`**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`
+			);
 		}
 
-		// Step 2: Add each new prompt INDIVIDUALLY to avoid payload size limits
-		const added: string[] = [];
-		const errors: string[] = [];
+		// Push all changes in one batch
+		try {
+			const result = await deployToLive(changes, 'push');
+			
+			// Force refresh cache after mutations
+			const newNames = await forceRefreshAndGetNames();
 
-		for (const prompt of prompts) {
-			try {
-				const changes: DocumentChange[] = [
-					{
-						path: prompt.name,
-						content: prompt.content,
-						status: 'added',
-					},
-				];
-				await deployToLive(changes, `push ${prompt.name}`);
-				added.push(prompt.name);
-			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
-				errors.push(`${prompt.name}: ${msg}`);
+			let content = `**Summary:**\n`;
+			content += `- Added: ${added.length}\n`;
+			content += `- Modified: ${modified.length}\n`;
+			content += `- Deleted: ${deleted.length}\n`;
+			content += `- Documents processed: ${result.documentsProcessed}\n\n`;
+			
+			if (added.length > 0) {
+				content += `### Added\n${added.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
 			}
+			if (modified.length > 0) {
+				content += `### Modified\n${modified.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
+			}
+			if (deleted.length > 0) {
+				content += `### Deleted\n${deleted.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
+			}
+			
+			content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+
+			return formatSuccess('Prompts Pushed to LIVE', content);
+		} catch (error) {
+			// Detailed error from API
+			if (error instanceof LatitudeApiError) {
+				return {
+					content: [{ type: 'text' as const, text: error.toMarkdown() }],
+					isError: true,
+				};
+			}
+			throw error;
 		}
-
-		// Force refresh cache after mutations
-		const newNames = await forceRefreshAndGetNames();
-
-		let content = `**Deleted:** ${existingNames.length} prompt(s)\n`;
-		content += `**Added:** ${added.length} prompt(s)\n`;
-		if (errors.length > 0) {
-			content += `**Errors:** ${errors.length}\n`;
-			content += errors.map((e) => `  - ${e}`).join('\n') + '\n';
-		}
-		content += `\n### Deployed Prompts\n\n`;
-		content += added.map((n) => `- \`${n}\``).join('\n');
-		content += `\n\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
-
-		if (added.length === 0 && errors.length > 0) {
-			return formatError(new Error(`All ${errors.length} prompt(s) failed:\n${errors.join('\n')}`));
-		}
-
-		return formatSuccess('Prompts Pushed to LIVE', content);
 	} catch (error) {
 		return formatError(error);
 	}
@@ -360,72 +364,96 @@ async function handleAppendPrompts(args: {
 
 		// Get existing prompts
 		const existingDocs = await listDocuments('live');
-		const existingNames = new Set(existingDocs.map((d: { path: string }) => d.path));
+		const existingMap = new Map(existingDocs.map((d) => [d.path, d]));
 
-		// Track results
-		const added: string[] = [];
-		const updated: string[] = [];
+		// Build changes - append does NOT delete existing prompts
+		const changes: DocumentChange[] = [];
 		const skipped: string[] = [];
-		const errors: string[] = [];
 
-		// Process each prompt INDIVIDUALLY to avoid payload size limits
 		for (const prompt of prompts) {
-			const exists = existingNames.has(prompt.name);
+			const existingDoc = existingMap.get(prompt.name);
 
-			if (exists && !args.overwrite) {
-				skipped.push(prompt.name);
-				continue;
-			}
-
-			try {
-				const changes: DocumentChange[] = [
-					{
-						path: prompt.name,
-						content: prompt.content,
-						status: exists ? 'modified' : 'added',
-					},
-				];
-
-				await deployToLive(changes, `append ${prompt.name}`);
-
-				if (exists) {
-					updated.push(prompt.name);
+			if (existingDoc) {
+				if (args.overwrite) {
+					// Only include if content is different
+					if (existingDoc.content !== prompt.content) {
+						changes.push({
+							path: prompt.name,
+							content: prompt.content,
+							status: 'modified',
+						});
+					}
+					// If same content, skip silently (unchanged)
 				} else {
-					added.push(prompt.name);
+					skipped.push(prompt.name);
 				}
-			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
-				errors.push(`${prompt.name}: ${msg}`);
+			} else {
+				// New prompt
+				changes.push({
+					path: prompt.name,
+					content: prompt.content,
+					status: 'added',
+				});
 			}
 		}
 
-		// Force refresh cache after mutations
-		const newNames = await forceRefreshAndGetNames();
+		// Summarize
+		const added = changes.filter((c: DocumentChange) => c.status === 'added');
+		const modified = changes.filter((c: DocumentChange) => c.status === 'modified');
 
-		let content = '';
-		if (added.length > 0) {
-			content += `**Added:** ${added.length}\n`;
-			content += added.map((n) => `  - \`${n}\``).join('\n') + '\n\n';
-		}
-		if (updated.length > 0) {
-			content += `**Updated:** ${updated.length}\n`;
-			content += updated.map((n) => `  - \`${n}\``).join('\n') + '\n\n';
-		}
-		if (skipped.length > 0) {
-			content += `**Skipped:** ${skipped.length} (already exist)\n`;
-		}
-		if (errors.length > 0) {
-			content += `\n**Errors:** ${errors.length}\n`;
-			content += errors.map((e) => `  - ${e}`).join('\n') + '\n';
-		}
-		content += `\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
-
-		const totalProcessed = added.length + updated.length;
-		if (totalProcessed === 0 && errors.length > 0) {
-			return formatError(new Error(`All ${errors.length} prompt(s) failed:\n${errors.join('\n')}`));
+		if (changes.length === 0 && skipped.length === 0) {
+			const newNames = await forceRefreshAndGetNames();
+			return formatSuccess('No Changes Needed', 
+				`All ${prompts.length} prompt(s) are already up to date.\n\n` +
+				`**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`
+			);
 		}
 
-		return formatSuccess('Prompts Appended to LIVE', content);
+		if (changes.length === 0) {
+			const newNames = await forceRefreshAndGetNames();
+			let content = `**Skipped:** ${skipped.length} (already exist, use overwrite=true to update)\n`;
+			content += `\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+			return formatSuccess('No Changes Made', content);
+		}
+
+		// Push all changes in one batch
+		try {
+			const result = await deployToLive(changes, 'append');
+			
+			// Force refresh cache after mutations
+			const newNames = await forceRefreshAndGetNames();
+
+			let content = `**Summary:**\n`;
+			content += `- Added: ${added.length}\n`;
+			content += `- Updated: ${modified.length}\n`;
+			if (skipped.length > 0) {
+				content += `- Skipped: ${skipped.length} (use overwrite=true)\n`;
+			}
+			content += `- Documents processed: ${result.documentsProcessed}\n\n`;
+			
+			if (added.length > 0) {
+				content += `### Added\n${added.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
+			}
+			if (modified.length > 0) {
+				content += `### Updated\n${modified.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
+			}
+			if (skipped.length > 0) {
+				content += `### Skipped (already exist)\n${skipped.map(n => `- \`${n}\``).join('\n')}\n\n`;
+			}
+			
+			content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+
+			return formatSuccess('Prompts Appended to LIVE', content);
+		} catch (error) {
+			// Detailed error from API
+			if (error instanceof LatitudeApiError) {
+				return {
+					content: [{ type: 'text' as const, text: error.toMarkdown() }],
+					isError: true,
+				};
+			}
+			throw error;
+		}
 	} catch (error) {
 		return formatError(error);
 	}

@@ -38,7 +38,7 @@ export interface Document {
 export interface DocumentChange {
 	path: string;
 	content: string;
-	status: 'added' | 'modified' | 'deleted';
+	status: 'added' | 'modified' | 'deleted' | 'unchanged';
 }
 
 export interface DeployResult {
