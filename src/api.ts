@@ -23,6 +23,7 @@ import type {
 	DeployResult,
 	RunResult,
 } from './types.js';
+import { scan, CompileError } from 'promptl-ai';
 
 const logger = Logger.forContext('api.ts');
 
@@ -79,6 +80,11 @@ async function request<T>(
 	logger.debug(`API ${method} ${endpoint}`);
 
 	try {
+		// Add __internal: { source: 'api' } to all POST requests (required by Latitude API)
+		const body = options.body && method === 'POST'
+			? { ...options.body, __internal: { source: 'api' } }
+			: options.body;
+		
 		const response = await fetch(url, {
 			method,
 			headers: {
@@ -86,7 +92,7 @@ async function request<T>(
 				Accept: 'application/json',
 				Authorization: `Bearer ${apiKey}`,
 			},
-			body: options.body ? JSON.stringify(options.body) : undefined,
+			body: body ? JSON.stringify(body) : undefined,
 			signal: controller.signal,
 		});
 
@@ -315,6 +321,11 @@ export async function listVersions(): Promise<Version[]> {
 	return request<Version[]>(`/projects/${projectId}/versions`);
 }
 
+export async function getVersion(versionUuid: string): Promise<Version> {
+	const projectId = getProjectId();
+	return request<Version>(`/projects/${projectId}/versions/${versionUuid}`);
+}
+
 export async function createVersion(name: string): Promise<Version> {
 	const projectId = getProjectId();
 	return request<Version>(`/projects/${projectId}/versions`, {
@@ -421,20 +432,6 @@ export async function pushChanges(
 }
 
 /**
- * Compute hash of content for diff comparison
- */
-export function hashContent(content: string): string {
-	// Simple hash - in production you might want crypto
-	let hash = 0;
-	for (let i = 0; i < content.length; i++) {
-		const char = content.charCodeAt(i);
-		hash = ((hash << 5) - hash) + char;
-		hash = hash & hash; // Convert to 32bit integer
-	}
-	return hash.toString(16);
-}
-
-/**
  * Compute diff between incoming prompts and existing prompts
  * Returns only the changes that need to be made
  */
@@ -502,29 +499,327 @@ export async function runDocument(
 	);
 }
 
-/**
- * Format timestamp for version names: "14 Jan 2025 - 13:11"
- * Optionally prepend action prefix like "push cover-letter"
- */
-function formatVersionName(prefix?: string): string {
-	const now = new Date();
-	const options: Intl.DateTimeFormatOptions = {
-		timeZone: 'America/Los_Angeles',
-		day: 'numeric',
-		month: 'short',
-		year: 'numeric',
-		hour: '2-digit',
-		minute: '2-digit',
-		hour12: false,
+interface FailedDocument {
+	path: string;
+	error: string;
+	code: string;           // Error code like 'message-tag-inside-message'
+	rootCause: string;
+	suggestion: string;
+	location?: {
+		line: number;
+		column: number;
 	};
-	const formatted = now.toLocaleString('en-US', options);
-	// "Jan 14, 2025, 13:11" → "14 Jan 2025 - 13:11"
-	const match = formatted.match(/(\w+)\s+(\d+),\s+(\d+),\s+(\d+:\d+)/);
-	const timestamp = match 
-		? `${match[2]} ${match[1]} ${match[3]} - ${match[4]}`
-		: now.toISOString().replace(/[:.]/g, '-');
+	codeFrame?: string;     // Formatted code context with ^ indicator
+}
+
+export interface ValidationIssue {
+	type: 'error' | 'warning';
+	code: string;           // Error code
+	message: string;
+	rootCause: string;
+	suggestion: string;
+	location?: {
+		line: number;
+		column: number;
+	};
+	codeFrame?: string;     // Formatted code context
+}
+
+/**
+ * Error code to human-readable fix suggestion mapping
+ */
+const ERROR_SUGGESTIONS: Record<string, { rootCause: string; suggestion: string }> = {
+	'message-tag-inside-message': {
+		rootCause: 'Message/role tags (<system>, <user>, <assistant>, <tool>) cannot be nested inside each other.',
+		suggestion: 'Move the nested tag outside its parent. If showing an example, use a code block (```yaml) instead of actual role tags.',
+	},
+	'content-tag-inside-content': {
+		rootCause: 'Content tags (<text>, <image>, <file>, <tool-call>) must be directly inside message tags.',
+		suggestion: 'Restructure so content tags are direct children of message tags, not nested in other content.',
+	},
+	'step-tag-inside-step': {
+		rootCause: 'Step/response tags cannot be nested inside each other.',
+		suggestion: 'Move the <response> tag outside its parent <response> tag.',
+	},
+	'config-not-found': {
+		rootCause: 'PromptL files require a YAML configuration section at the top.',
+		suggestion: 'Add config at the beginning:\n---\nprovider: openai\nmodel: gpt-4\n---',
+	},
+	'config-already-declared': {
+		rootCause: 'Only one configuration section is allowed per file.',
+		suggestion: 'Remove the duplicate --- config --- section.',
+	},
+	'invalid-config': {
+		rootCause: 'The YAML configuration has syntax or validation errors.',
+		suggestion: 'Check YAML syntax. Required fields: model. Optional: provider, temperature, schema.',
+	},
+	'unclosed-block': {
+		rootCause: 'A tag or block was opened but never closed.',
+		suggestion: 'Add the missing closing tag. Check for typos in tag names.',
+	},
+	'unexpected-eof': {
+		rootCause: 'The file ended unexpectedly, likely due to unclosed tags or blocks.',
+		suggestion: 'Ensure all opened tags ({#if}, {#each}, <system>, etc.) are properly closed.',
+	},
+	'variable-not-defined': {
+		rootCause: 'A variable is used but not provided in parameters.',
+		suggestion: 'Either pass this variable when calling the prompt, or define it with {#let}.',
+	},
+	'invalid-tool-call-placement': {
+		rootCause: 'Tool calls (<tool-call>) can only appear inside <assistant> messages.',
+		suggestion: 'Move the <tool-call> tag inside an <assistant> block.',
+	},
+};
+
+/**
+ * Pre-validate PromptL content using the official promptl-ai library.
+ * Returns detailed, actionable error messages with code frames.
+ * EXPORTED for use by tools.ts to pre-validate before pushing.
+ */
+export async function validatePromptLContent(content: string, path: string): Promise<ValidationIssue[]> {
+	const issues: ValidationIssue[] = [];
 	
-	return prefix ? `${prefix} (${timestamp})` : timestamp;
+	try {
+		// Use official promptl-ai scan function for validation
+		const result = await scan({
+			prompt: content,
+			fullPath: path,
+			requireConfig: false, // Don't require config for flexibility
+		});
+		
+		// Convert CompileErrors to our ValidationIssue format
+		for (const compileError of result.errors) {
+			// Get human-readable suggestion based on error code
+			const suggestionInfo = ERROR_SUGGESTIONS[compileError.code] || {
+				rootCause: compileError.message,
+				suggestion: 'Review the PromptL documentation for correct syntax.',
+			};
+			
+			issues.push({
+				type: 'error',
+				code: compileError.code,
+				message: compileError.message,
+				rootCause: suggestionInfo.rootCause,
+				suggestion: suggestionInfo.suggestion,
+				location: compileError.start ? {
+					line: compileError.start.line,
+					column: compileError.start.column,
+				} : undefined,
+				codeFrame: compileError.frame, // The beautiful formatted code frame!
+			});
+		}
+	} catch (err) {
+		// Handle parse errors (thrown, not accumulated)
+		if (err instanceof CompileError) {
+			const suggestionInfo = ERROR_SUGGESTIONS[err.code] || {
+				rootCause: err.message,
+				suggestion: 'Fix the syntax error at the indicated location.',
+			};
+			
+			issues.push({
+				type: 'error',
+				code: err.code,
+				message: err.message,
+				rootCause: suggestionInfo.rootCause,
+				suggestion: suggestionInfo.suggestion,
+				location: err.start ? {
+					line: err.start.line,
+					column: err.start.column,
+				} : undefined,
+				codeFrame: err.frame,
+			});
+		} else {
+			// Unknown error - still report it
+			issues.push({
+				type: 'error',
+				code: 'unknown-error',
+				message: err instanceof Error ? err.message : 'Unknown validation error',
+				rootCause: 'An unexpected error occurred during validation.',
+				suggestion: 'Check the prompt content for syntax errors.',
+			});
+		}
+	}
+	
+	return issues;
+}
+
+/**
+ * Identify failing documents using binary search for efficiency.
+ * For N documents, worst case is O(N log N) API calls instead of O(N).
+ */
+async function identifyFailingDocuments(
+	changes: DocumentChange[]
+): Promise<FailedDocument[]> {
+	const failed: FailedDocument[] = [];
+	const nonDeleteChanges = changes.filter(c => c.status !== 'deleted');
+	
+	if (nonDeleteChanges.length === 0) return failed;
+	
+	// First, run local validation to catch obvious issues without API calls
+	for (const change of nonDeleteChanges) {
+		if (!change.content) continue;
+		
+		const localIssues = await validatePromptLContent(change.content, change.path);
+		const errors = localIssues.filter((i: ValidationIssue) => i.type === 'error');
+		
+		if (errors.length > 0) {
+			const mainError = errors[0];
+			failed.push({
+				path: change.path,
+				error: mainError.message,
+				code: mainError.code,
+				rootCause: mainError.rootCause,
+				suggestion: mainError.suggestion,
+				location: mainError.location,
+				codeFrame: mainError.codeFrame,
+			});
+		}
+	}
+	
+	// If we found local validation errors, return those first
+	if (failed.length > 0) {
+		logger.info(`Found ${failed.length} document(s) with local validation errors`);
+		return failed;
+	}
+	
+	// If local validation passed, use binary search to find API-level failures
+	logger.info(`Local validation passed, testing ${nonDeleteChanges.length} document(s) against API...`);
+	
+	// For small batches (<=5), test individually
+	if (nonDeleteChanges.length <= 5) {
+		return await testDocumentsIndividually(nonDeleteChanges);
+	}
+	
+	// For larger batches, use binary search
+	return await binarySearchFailures(nonDeleteChanges);
+}
+
+/**
+ * Test documents individually (for small batches)
+ */
+async function testDocumentsIndividually(
+	changes: DocumentChange[]
+): Promise<FailedDocument[]> {
+	const failed: FailedDocument[] = [];
+	
+	for (const change of changes) {
+		const result = await testSingleDocument(change);
+		if (result) {
+			failed.push(result);
+		}
+	}
+	
+	return failed;
+}
+
+/**
+ * Test a single document and return failure details if it fails
+ */
+async function testSingleDocument(
+	change: DocumentChange
+): Promise<FailedDocument | null> {
+	try {
+		const testDraft = await createVersion(`val-${Date.now()}-${change.path.slice(0, 20)}`);
+		await pushChanges(testDraft.uuid, [change]);
+		await publishVersion(testDraft.uuid);
+		return null; // Success
+	} catch (error) {
+		const errorMsg = error instanceof LatitudeApiError 
+			? error.message 
+			: (error instanceof Error ? error.message : 'Unknown error');
+		
+		// Try to provide better root cause based on error patterns
+		let rootCause = 'The Latitude API rejected this document during publish validation.';
+		let suggestion = 'Review the document content for syntax errors or invalid configuration.';
+		
+		if (errorMsg.includes('errors in the updated documents')) {
+			rootCause = 'The document has PromptL syntax or configuration errors that passed local validation but failed server-side validation.';
+			suggestion = 'Check for: 1) Invalid model/provider combination, 2) Malformed schema definition, 3) Invalid template syntax ({{ }}).';
+		}
+		
+		// Run local validation to give more context
+		if (change.content) {
+			const localIssues = await validatePromptLContent(change.content, change.path);
+			if (localIssues.length > 0) {
+				const warnings = localIssues.filter((i: ValidationIssue) => i.type === 'warning');
+				if (warnings.length > 0) {
+					suggestion += `\n\nAdditional observations:\n${warnings.map((w: ValidationIssue) => `- ${w.message}: ${w.suggestion}`).join('\n')}`;
+				}
+			}
+		}
+		
+		return {
+			path: change.path,
+			error: errorMsg,
+			code: 'api-validation-error',
+			rootCause,
+			suggestion,
+		};
+	}
+}
+
+/**
+ * Use binary search to efficiently find failures in large batches.
+ * Splits the batch in half, tests each half, and recurses on failing halves.
+ */
+async function binarySearchFailures(
+	changes: DocumentChange[]
+): Promise<FailedDocument[]> {
+	// Base case: single document
+	if (changes.length === 1) {
+		const result = await testSingleDocument(changes[0]);
+		return result ? [result] : [];
+	}
+	
+	// Test the entire batch first
+	const batchValid = await testBatch(changes);
+	if (batchValid) {
+		return []; // All documents in this batch are valid
+	}
+	
+	// Batch has failures - split and recurse
+	const mid = Math.floor(changes.length / 2);
+	const left = changes.slice(0, mid);
+	const right = changes.slice(mid);
+	
+	// Test both halves in parallel
+	const [leftFailures, rightFailures] = await Promise.all([
+		binarySearchFailures(left),
+		binarySearchFailures(right),
+	]);
+	
+	return [...leftFailures, ...rightFailures];
+}
+
+/**
+ * Test if a batch of documents can be published successfully
+ */
+async function testBatch(changes: DocumentChange[]): Promise<boolean> {
+	try {
+		const testDraft = await createVersion(`batch-val-${Date.now()}`);
+		await pushChanges(testDraft.uuid, changes);
+		await publishVersion(testDraft.uuid);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Create a synthetic Version object for no-op deploys.
+ * Returns a fully populated Version with all required fields.
+ */
+function createNoOpVersion(): Version {
+	const now = new Date().toISOString();
+	return {
+		id: 0,
+		uuid: 'live',
+		projectId: 0,
+		message: 'No changes to deploy',
+		createdAt: now,
+		updatedAt: now,
+		status: 'live',
+	};
 }
 
 /**
@@ -537,12 +832,12 @@ function formatVersionName(prefix?: string): string {
  */
 export async function deployToLive(
 	changes: DocumentChange[],
-	versionName?: string
+	_versionName?: string
 ): Promise<DeployResult> {
 	if (changes.length === 0) {
 		logger.info('No changes to deploy');
 		return {
-			version: { uuid: 'live' } as Version,
+			version: createNoOpVersion(),
 			documentsProcessed: 0,
 			added: [],
 			modified: [],
@@ -556,7 +851,7 @@ export async function deployToLive(
 	if (actualChanges.length === 0) {
 		logger.info('All prompts are unchanged, nothing to deploy');
 		return {
-			version: { uuid: 'live' } as Version,
+			version: createNoOpVersion(),
 			documentsProcessed: 0,
 			added: [],
 			modified: [],
@@ -569,12 +864,12 @@ export async function deployToLive(
 	const modified = actualChanges.filter((c) => c.status === 'modified').map((c) => c.path);
 	const deleted = actualChanges.filter((c) => c.status === 'deleted').map((c) => c.path);
 	
-	const name = versionName || formatVersionName();
 	logger.info(`Deploying to LIVE: ${added.length} added, ${modified.length} modified, ${deleted.length} deleted`);
 
 	// Step 1: Create a new draft version
-	logger.info(`Creating draft version: ${name}`);
-	const draft = await createVersion(name);
+	const draftName = `MCP deploy ${new Date().toISOString()}`;
+	logger.info(`Creating draft version: ${draftName}`);
+	const draft = await createVersion(draftName);
 	logger.info(`Draft created: ${draft.uuid}`);
 
 	// Step 2: Push all changes to the draft in ONE batch
@@ -584,16 +879,59 @@ export async function deployToLive(
 
 	// Step 3: Publish the draft to make it LIVE
 	logger.info(`Publishing draft ${draft.uuid} to LIVE...`);
-	const published = await publishVersion(draft.uuid, name);
-	logger.info(`Published successfully! Version is now LIVE: ${published.uuid}`);
+	try {
+		const published = await publishVersion(draft.uuid, draftName);
+		logger.info(`Published successfully! Version is now LIVE: ${published.uuid}`);
 
-	return {
-		version: published,
-		documentsProcessed: pushResult.documentsProcessed,
-		added,
-		modified,
-		deleted,
-	};
+		return {
+			version: published,
+			documentsProcessed: pushResult.documentsProcessed,
+			added,
+			modified,
+			deleted,
+		};
+	} catch (publishError) {
+		// Publish failed - identify which document(s) have validation errors
+		logger.warn('Batch publish failed, identifying problematic documents...');
+		const failedDocs = await identifyFailingDocuments(actualChanges);
+		
+		if (failedDocs.length > 0) {
+			// Build detailed, actionable error message for LLM consumption
+			const errorLines: string[] = [];
+			for (const doc of failedDocs) {
+				errorLines.push(`\n## ❌ ${doc.path}`);
+				errorLines.push(`**Error Code:** \`${doc.code}\``);
+				errorLines.push(`**Error:** ${doc.error}`);
+				errorLines.push(`**Root Cause:** ${doc.rootCause}`);
+				if (doc.location) {
+					errorLines.push(`**Location:** Line ${doc.location.line}, Column ${doc.location.column}`);
+				}
+				if (doc.codeFrame) {
+					errorLines.push(`**Code Context:**\n\`\`\`\n${doc.codeFrame}\n\`\`\``);
+				}
+				errorLines.push(`**Fix:** ${doc.suggestion}`);
+			}
+			
+			const message = `${failedDocs.length} document(s) failed validation:${errorLines.join('\n')}`;
+			
+			throw new LatitudeApiError(
+				{
+					name: 'DocumentValidationError',
+					errorCode: 'DOCUMENT_VALIDATION_FAILED',
+					message,
+					details: { 
+						failedDocuments: failedDocs,
+						totalFailed: failedDocs.length,
+						failedPaths: failedDocs.map(d => d.path),
+					},
+				},
+				422
+			);
+		}
+		
+		// Re-throw original error if we couldn't identify specific failures
+		throw publishError;
+	}
 }
 
 export async function getPromptNames(): Promise<string[]> {

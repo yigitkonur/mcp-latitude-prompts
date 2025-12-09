@@ -32,6 +32,8 @@ import {
 	runDocument,
 	deployToLive,
 	computeDiff,
+	validatePromptLContent,
+	type ValidationIssue,
 } from './api.js';
 import { getHelp, getDocs, findDocs } from './docs.js';
 import type { DocumentChange } from './types.js';
@@ -140,6 +142,82 @@ function formatAvailablePrompts(names: string[]): string {
 	
 	const formatted = names.map(n => `\`${n}\``).join(', ');
 	return `\n\n**Available prompts (${names.length}):** ${formatted}`;
+}
+
+// ============================================================================
+// Pre-Validation Helper
+// ============================================================================
+
+interface PromptValidationResult {
+	valid: boolean;
+	errors: Array<{
+		name: string;
+		issues: ValidationIssue[];
+	}>;
+}
+
+/**
+ * Validate all prompts BEFORE pushing.
+ * If ANY prompt fails validation, returns all errors and NOTHING is pushed.
+ */
+async function validateAllPrompts(
+	prompts: Array<{ name: string; content: string }>
+): Promise<PromptValidationResult> {
+	const errors: Array<{ name: string; issues: ValidationIssue[] }> = [];
+
+	for (const prompt of prompts) {
+		const issues = await validatePromptLContent(prompt.content, prompt.name);
+		const errorIssues = issues.filter(i => i.type === 'error');
+		
+		if (errorIssues.length > 0) {
+			errors.push({ name: prompt.name, issues: errorIssues });
+		}
+	}
+
+	return {
+		valid: errors.length === 0,
+		errors,
+	};
+}
+
+/**
+ * Format validation errors into a detailed MCP-friendly error message.
+ */
+function formatValidationErrors(
+	errors: Array<{ name: string; issues: ValidationIssue[] }>
+): ToolResult {
+	const lines: string[] = [
+		`## ❌ Validation Failed - No Changes Made\n`,
+		`**${errors.length} prompt(s) have errors.** Fix all errors before pushing.\n`,
+	];
+
+	for (const { name, issues } of errors) {
+		for (const issue of issues) {
+			lines.push(`### ${name}`);
+			lines.push(`**Error Code:** \`${issue.code}\``);
+			lines.push(`**Error:** ${issue.message}`);
+			lines.push(`**Root Cause:** ${issue.rootCause}`);
+			
+			if (issue.location) {
+				lines.push(`**Location:** Line ${issue.location.line}, Column ${issue.location.column}`);
+			}
+			
+			if (issue.codeFrame) {
+				lines.push(`**Code Context:**\n\`\`\`\n${issue.codeFrame}\n\`\`\``);
+			}
+			
+			lines.push(`**Fix:** ${issue.suggestion}`);
+			lines.push('');
+		}
+	}
+
+	lines.push(`---`);
+	lines.push(`**Action Required:** Fix the errors above, then retry.`);
+
+	return {
+		content: [{ type: 'text' as const, text: lines.join('\n') }],
+		isError: true,
+	};
 }
 
 // ============================================================================
@@ -258,6 +336,17 @@ async function handlePushPrompts(args: {
 			return formatError(new Error('No prompts provided. Use either prompts array or filePaths.'));
 		}
 
+		// PRE-VALIDATE ALL PROMPTS BEFORE PUSHING
+		// If ANY prompt fails validation, return errors and push NOTHING
+		logger.info(`Validating ${prompts.length} prompt(s) before push...`);
+		const validation = await validateAllPrompts(prompts);
+		
+		if (!validation.valid) {
+			logger.warn(`Validation failed for ${validation.errors.length} prompt(s)`);
+			return formatValidationErrors(validation.errors);
+		}
+		logger.info(`All ${prompts.length} prompt(s) passed validation`);
+
 		// Get existing prompts for diff computation
 		const existingDocs = await listDocuments('live');
 		
@@ -361,6 +450,17 @@ async function handleAppendPrompts(args: {
 		if (prompts.length === 0) {
 			return formatError(new Error('No prompts provided. Use either prompts array or filePaths.'));
 		}
+
+		// PRE-VALIDATE ALL PROMPTS BEFORE APPENDING
+		// If ANY prompt fails validation, return errors and append NOTHING
+		logger.info(`Validating ${prompts.length} prompt(s) before append...`);
+		const validation = await validateAllPrompts(prompts);
+		
+		if (!validation.valid) {
+			logger.warn(`Validation failed for ${validation.errors.length} prompt(s)`);
+			return formatValidationErrors(validation.errors);
+		}
+		logger.info(`All ${prompts.length} prompt(s) passed validation`);
 
 		// Get existing prompts
 		const existingDocs = await listDocuments('live');
@@ -570,6 +670,17 @@ async function handleReplacePrompt(args: {
 		if (!content) {
 			return formatError(new Error('Prompt content is required. Provide either `content` or `filePath`.'));
 		}
+
+		// PRE-VALIDATE PROMPT BEFORE REPLACING
+		// If validation fails, return error and replace NOTHING
+		logger.info(`Validating prompt "${name}" before replace...`);
+		const validation = await validateAllPrompts([{ name, content }]);
+		
+		if (!validation.valid) {
+			logger.warn(`Validation failed for prompt "${name}"`);
+			return formatValidationErrors(validation.errors);
+		}
+		logger.info(`Prompt "${name}" passed validation`);
 
 		// Check if prompt exists
 		const existingDocs = await listDocuments('live');
