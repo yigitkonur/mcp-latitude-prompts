@@ -261,39 +261,53 @@ async function handlePushPrompts(args: {
 		const existingDocs = await listDocuments('live');
 		const existingNames = existingDocs.map((d: { path: string }) => d.path);
 
-		// Build changes: delete existing + add new
-		const changes: DocumentChange[] = [];
-
-		// Delete all existing
-		for (const name of existingNames) {
-			changes.push({
+		// Step 1: Delete all existing prompts in one batch (deletions are small)
+		if (existingNames.length > 0) {
+			const deleteChanges: DocumentChange[] = existingNames.map((name) => ({
 				path: name,
 				content: '',
-				status: 'deleted',
-			});
+				status: 'deleted' as const,
+			}));
+			await deployToLive(deleteChanges, 'push-delete-existing');
 		}
 
-		// Add all new
+		// Step 2: Add each new prompt INDIVIDUALLY to avoid payload size limits
+		const added: string[] = [];
+		const errors: string[] = [];
+
 		for (const prompt of prompts) {
-			changes.push({
-				path: prompt.name,
-				content: prompt.content,
-				status: 'added',
-			});
+			try {
+				const changes: DocumentChange[] = [
+					{
+						path: prompt.name,
+						content: prompt.content,
+						status: 'added',
+					},
+				];
+				await deployToLive(changes, `push-add-${prompt.name}`);
+				added.push(prompt.name);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				errors.push(`${prompt.name}: ${msg}`);
+			}
 		}
 
-		// Deploy to LIVE
-		const { version } = await deployToLive(changes, 'push-prompts');
-
-		// Force refresh cache after mutation
+		// Force refresh cache after mutations
 		const newNames = await forceRefreshAndGetNames();
 
 		let content = `**Deleted:** ${existingNames.length} prompt(s)\n`;
-		content += `**Added:** ${prompts.length} prompt(s)\n`;
-		content += `**Version:** \`${version.uuid}\`\n\n`;
-		content += `### Deployed Prompts\n\n`;
-		content += prompts.map((p) => `- \`${p.name}\``).join('\n');
-		content += `\n\n---\n**Current LIVE prompts:** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+		content += `**Added:** ${added.length} prompt(s)\n`;
+		if (errors.length > 0) {
+			content += `**Errors:** ${errors.length}\n`;
+			content += errors.map((e) => `  - ${e}`).join('\n') + '\n';
+		}
+		content += `\n### Deployed Prompts\n\n`;
+		content += added.map((n) => `- \`${n}\``).join('\n');
+		content += `\n\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+
+		if (added.length === 0 && errors.length > 0) {
+			return formatError(new Error(`All ${errors.length} prompt(s) failed:\n${errors.join('\n')}`));
+		}
 
 		return formatSuccess('Prompts Pushed to LIVE', content);
 	} catch (error) {
@@ -348,12 +362,13 @@ async function handleAppendPrompts(args: {
 		const existingDocs = await listDocuments('live');
 		const existingNames = new Set(existingDocs.map((d: { path: string }) => d.path));
 
-		// Build changes
-		const changes: DocumentChange[] = [];
+		// Track results
 		const added: string[] = [];
 		const updated: string[] = [];
 		const skipped: string[] = [];
+		const errors: string[] = [];
 
+		// Process each prompt INDIVIDUALLY to avoid payload size limits
 		for (const prompt of prompts) {
 			const exists = existingNames.has(prompt.name);
 
@@ -362,30 +377,29 @@ async function handleAppendPrompts(args: {
 				continue;
 			}
 
-			changes.push({
-				path: prompt.name,
-				content: prompt.content,
-				status: exists ? 'modified' : 'added',
-			});
+			try {
+				const changes: DocumentChange[] = [
+					{
+						path: prompt.name,
+						content: prompt.content,
+						status: exists ? 'modified' : 'added',
+					},
+				];
 
-			if (exists) {
-				updated.push(prompt.name);
-			} else {
-				added.push(prompt.name);
+				await deployToLive(changes, `append-${prompt.name}`);
+
+				if (exists) {
+					updated.push(prompt.name);
+				} else {
+					added.push(prompt.name);
+				}
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				errors.push(`${prompt.name}: ${msg}`);
 			}
 		}
 
-		if (changes.length === 0) {
-			return formatSuccess(
-				'No Changes Made',
-				`All ${skipped.length} prompt(s) already exist. Use \`overwrite: true\` to replace.`
-			);
-		}
-
-		// Deploy to LIVE
-		const { version } = await deployToLive(changes, 'append-prompts');
-
-		// Force refresh cache after mutation
+		// Force refresh cache after mutations
 		const newNames = await forceRefreshAndGetNames();
 
 		let content = '';
@@ -400,8 +414,16 @@ async function handleAppendPrompts(args: {
 		if (skipped.length > 0) {
 			content += `**Skipped:** ${skipped.length} (already exist)\n`;
 		}
-		content += `\n**Version:** \`${version.uuid}\``;
-		content += `\n\n---\n**Current LIVE prompts:** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+		if (errors.length > 0) {
+			content += `\n**Errors:** ${errors.length}\n`;
+			content += errors.map((e) => `  - ${e}`).join('\n') + '\n';
+		}
+		content += `\n---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+
+		const totalProcessed = added.length + updated.length;
+		if (totalProcessed === 0 && errors.length > 0) {
+			return formatError(new Error(`All ${errors.length} prompt(s) failed:\n${errors.join('\n')}`));
+		}
 
 		return formatSuccess('Prompts Appended to LIVE', content);
 	} catch (error) {
