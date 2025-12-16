@@ -602,7 +602,7 @@ async function publishVersion(versionUuid: string): Promise<PublishResponse> {
 		{
 			method: 'POST',
 			body: {},
-		}
+		},
 	);
 }
 
@@ -642,7 +642,7 @@ export async function deployToLive(
 		};
 	}
 
-	const actualChanges = changes.filter(c => c.status !== 'unchanged');
+	const actualChanges = changes.filter((c) => c.status !== 'unchanged');
 	
 	if (actualChanges.length === 0) {
 		logger.info('All prompts are unchanged, nothing to deploy');
