@@ -1,3 +1,10 @@
+## [4.0.4](https://github.com/yigitkonur/latitude-mcp-server/compare/v4.0.3...v4.0.4) (2025-12-16)
+
+
+### Bug Fixes
+
+* **ci:** disable npm publishing in semantic-release ([674579c](https://github.com/yigitkonur/latitude-mcp-server/commit/674579ca80b86c4d6a5107f2acf00d5526152a85))
+
 ## [4.0.3](https://github.com/yigitkonur/latitude-mcp-server/compare/v4.0.2...v4.0.3) (2025-12-16)
 
 
