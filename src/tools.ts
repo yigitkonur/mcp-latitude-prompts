@@ -19,8 +19,10 @@ import {
 	readdirSync,
 	unlinkSync,
 	readFileSync,
+	rmSync,
 } from 'fs';
-import { join, resolve, basename } from 'path';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Logger } from './utils/logger.util.js';
 import {
@@ -31,9 +33,7 @@ import {
 	runDocument,
 	deployToLive,
 	computeDiff,
-	normalizePath,
 	validatePromptLContent,
-	computeContentHash,
 	type ValidationIssue,
 } from './api.js';
 import { getHelp, getDocs, findDocs } from './docs.js';
@@ -60,7 +60,10 @@ async function refreshPromptCache(): Promise<string[]> {
 		const docs = await listDocuments('live');
 		cachedPromptNames = docs.map((d) => d.path);
 		// Also cache full documents for variable extraction (avoids extra API calls)
-		cachedDocuments = docs.map((d) => ({ path: d.path, content: d.content }));
+		cachedDocuments = docs.map((d) => ({
+			path: d.path,
+			content: d.content,
+		}));
 		cacheLastUpdated = new Date();
 		logger.debug(`Cache updated: ${cachedPromptNames.length} prompts`);
 		return cachedPromptNames;
@@ -72,7 +75,10 @@ async function refreshPromptCache(): Promise<string[]> {
 
 async function getCachedPromptNames(): Promise<string[]> {
 	const now = new Date();
-	if (!cacheLastUpdated || now.getTime() - cacheLastUpdated.getTime() > CACHE_TTL_MS) {
+	if (
+		!cacheLastUpdated ||
+		now.getTime() - cacheLastUpdated.getTime() > CACHE_TTL_MS
+	) {
 		await refreshPromptCache();
 	}
 	return cachedPromptNames;
@@ -124,17 +130,34 @@ function getPromptsDir(): string {
 	return resolve(process.cwd(), 'prompts');
 }
 
-// Read content from file path
-function readPromptFile(filePath: string): { name: string; content: string } {
-	const resolvedPath = resolve(filePath);
+/**
+ * Read all .promptl files from a folder.
+ * Returns array of { name, content } where name is derived from filename.
+ */
+function readPromptsFromFolder(
+	folderPath: string,
+): Array<{ name: string; content: string }> {
+	const resolvedPath = resolve(folderPath);
 	if (!existsSync(resolvedPath)) {
-		throw new Error(`File not found: ${resolvedPath}`);
+		throw new Error(`Folder not found: ${resolvedPath}`);
 	}
-	const content = readFileSync(resolvedPath, 'utf-8');
-	// Extract name from filename (remove .promptl extension)
-	const filename = basename(resolvedPath);
-	const name = filename.replace(/\.promptl$/, '').replace(/_/g, '/');
-	return { name, content };
+
+	const files = readdirSync(resolvedPath).filter((f) =>
+		f.endsWith('.promptl'),
+	);
+	if (files.length === 0) {
+		throw new Error(`No .promptl files found in: ${resolvedPath}`);
+	}
+
+	const prompts: Array<{ name: string; content: string }> = [];
+	for (const file of files) {
+		const filePath = join(resolvedPath, file);
+		const content = readFileSync(filePath, 'utf-8');
+		const name = file.replace(/\.promptl$/, '').replace(/_/g, '/');
+		prompts.push({ name, content });
+	}
+
+	return prompts;
 }
 
 // Format available prompts for description
@@ -142,8 +165,8 @@ function formatAvailablePrompts(names: string[]): string {
 	if (names.length === 0) {
 		return '\n\n**No prompts in LIVE yet.** Use this tool to create the first one.';
 	}
-	
-	const formatted = names.map(n => `\`${n}\``).join(', ');
+
+	const formatted = names.map((n) => `\`${n}\``).join(', ');
 	return `\n\n**Available prompts (${names.length}):** ${formatted}`;
 }
 
@@ -153,24 +176,28 @@ function formatAvailablePrompts(names: string[]): string {
  */
 function extractVariables(content: string): string[] {
 	const variables = new Set<string>();
-	
+
 	// Match {{ variable }} and { variable } patterns (PromptL syntax)
 	const patterns = [
-		/\{\{\s*(\w+)\s*\}\}/g,  // {{ variable }}
-		/\{\s*(\w+)\s*\}/g,      // { variable }
+		/\{\{\s*(\w+)\s*\}\}/g, // {{ variable }}
+		/\{\s*(\w+)\s*\}/g, // { variable }
 	];
-	
+
 	for (const pattern of patterns) {
 		let match;
 		while ((match = pattern.exec(content)) !== null) {
 			// Exclude control flow keywords
 			const varName = match[1];
-			if (!['if', 'else', 'each', 'let', 'end', 'for', 'unless'].includes(varName)) {
+			if (
+				!['if', 'else', 'each', 'let', 'end', 'for', 'unless'].includes(
+					varName,
+				)
+			) {
 				variables.add(varName);
 			}
 		}
 	}
-	
+
 	return Array.from(variables);
 }
 
@@ -184,26 +211,26 @@ let cachedDocuments: Array<{ path: string; content: string }> = [];
 async function buildRunPromptDescription(): Promise<string> {
 	// Use cached documents if available, otherwise just show names
 	const names = await getCachedPromptNames();
-	
+
 	let desc = 'Execute a prompt with parameters.';
-	
+
 	if (names.length === 0) {
 		desc += '\n\n**No prompts in LIVE yet.**';
 		return desc;
 	}
-	
+
 	desc += `\n\n**Available prompts (${names.length}):**`;
-	
+
 	// Use cached documents for variable extraction (no extra API calls)
 	const maxToShow = Math.min(names.length, 10);
-	const docMap = new Map(cachedDocuments.map(d => [d.path, d.content]));
-	
+	const docMap = new Map(cachedDocuments.map((d) => [d.path, d.content]));
+
 	for (let i = 0; i < maxToShow; i++) {
 		const content = docMap.get(names[i]);
 		if (content) {
 			const vars = extractVariables(content);
 			if (vars.length > 0) {
-				desc += `\n- \`${names[i]}\` (params: ${vars.map(v => `\`${v}\``).join(', ')})`;
+				desc += `\n- \`${names[i]}\` (params: ${vars.map((v) => `\`${v}\``).join(', ')})`;
 			} else {
 				desc += `\n- \`${names[i]}\` (no params)`;
 			}
@@ -211,11 +238,11 @@ async function buildRunPromptDescription(): Promise<string> {
 			desc += `\n- \`${names[i]}\``;
 		}
 	}
-	
+
 	if (names.length > maxToShow) {
 		desc += `\n- ... and ${names.length - maxToShow} more`;
 	}
-	
+
 	return desc;
 }
 
@@ -224,12 +251,12 @@ async function buildRunPromptDescription(): Promise<string> {
  */
 async function buildAddPromptDescription(): Promise<string> {
 	const names = await getCachedPromptNames();
-	
+
 	let desc = 'Add or update prompt(s) in LIVE without deleting others. ';
 	desc += 'If a prompt with the same name exists, it will be overwritten. ';
 	desc += 'Provide `prompts` array OR `filePaths` to .promptl files.';
 	desc += formatAvailablePrompts(names);
-	
+
 	return desc;
 }
 
@@ -250,14 +277,17 @@ interface PromptValidationResult {
  * If ANY prompt fails validation, returns all errors and NOTHING is pushed.
  */
 async function validateAllPrompts(
-	prompts: Array<{ name: string; content: string }>
+	prompts: Array<{ name: string; content: string }>,
 ): Promise<PromptValidationResult> {
 	const errors: Array<{ name: string; issues: ValidationIssue[] }> = [];
 
 	for (const prompt of prompts) {
-		const issues = await validatePromptLContent(prompt.content, prompt.name);
-		const errorIssues = issues.filter(i => i.type === 'error');
-		
+		const issues = await validatePromptLContent(
+			prompt.content,
+			prompt.name,
+		);
+		const errorIssues = issues.filter((i) => i.type === 'error');
+
 		if (errorIssues.length > 0) {
 			errors.push({ name: prompt.name, issues: errorIssues });
 		}
@@ -273,7 +303,7 @@ async function validateAllPrompts(
  * Format validation errors into a detailed MCP-friendly error message.
  */
 function formatValidationErrors(
-	errors: Array<{ name: string; issues: ValidationIssue[] }>
+	errors: Array<{ name: string; issues: ValidationIssue[] }>,
 ): ToolResult {
 	const lines: string[] = [
 		`## ❌ Validation Failed - No Changes Made\n`,
@@ -286,15 +316,19 @@ function formatValidationErrors(
 			lines.push(`**Error Code:** \`${issue.code}\``);
 			lines.push(`**Error:** ${issue.message}`);
 			lines.push(`**Root Cause:** ${issue.rootCause}`);
-			
+
 			if (issue.location) {
-				lines.push(`**Location:** Line ${issue.location.line}, Column ${issue.location.column}`);
+				lines.push(
+					`**Location:** Line ${issue.location.line}, Column ${issue.location.column}`,
+				);
 			}
-			
+
 			if (issue.codeFrame) {
-				lines.push(`**Code Context:**\n\`\`\`\n${issue.codeFrame}\n\`\`\``);
+				lines.push(
+					`**Code Context:**\n\`\`\`\n${issue.codeFrame}\n\`\`\``,
+				);
 			}
-			
+
 			lines.push(`**Fix:** ${issue.suggestion}`);
 			lines.push('');
 		}
@@ -320,13 +354,16 @@ async function handleListPrompts(): Promise<ToolResult> {
 		const names = await forceRefreshAndGetNames();
 
 		if (names.length === 0) {
-			return formatSuccess('No Prompts Found', 'The project has no prompts yet.');
+			return formatSuccess(
+				'No Prompts Found',
+				'The project has no prompts yet.',
+			);
 		}
 
 		const list = names.map((n: string) => `- \`${n}\``).join('\n');
 		return formatSuccess(
 			`Found ${names.length} Prompt(s)`,
-			`**Project ID:** \`${getProjectId()}\`\n\n${list}`
+			`**Project ID:** \`${getProjectId()}\`\n\n${list}`,
 		);
 	} catch (error) {
 		return formatError(error);
@@ -389,83 +426,86 @@ async function handleRunPrompt(args: {
 }
 
 const PushPromptsSchema = z.object({
-	prompts: z
-		.array(
-			z.object({
-				name: z.string().describe('Prompt name (without .promptl extension)'),
-				content: z.string().describe('Full prompt content'),
-			})
-		)
-		.optional()
-		.describe('Prompts to push - FULL SYNC: replaces ALL existing prompts in LIVE'),
-	filePaths: z
-		.array(z.string())
-		.optional()
-		.describe('File paths to .promptl files - FULL SYNC: deletes remote prompts not in this list'),
+	folderPath: z
+		.string()
+		.describe(
+			'Absolute path to folder containing .promptl files. FULL SYNC: replaces ALL remote prompts with contents of this folder.',
+		),
 	versionName: z
 		.string()
 		.optional()
-		.describe('Optional version name (like git branch: feat/add-auth, fix/typo). If omitted, auto-generates timestamp.'),
+		.describe(
+			'Optional version name (like git commit message). If omitted, auto-generates timestamp.',
+		),
 });
 
 async function handlePushPrompts(args: {
-	prompts?: Array<{ name: string; content: string }>;
-	filePaths?: string[];
+	folderPath: string;
 	versionName?: string;
 }): Promise<ToolResult> {
 	try {
-		// Build prompts from either direct input or file paths
-		let prompts: Array<{ name: string; content: string }> = [];
-		
-		if (args.filePaths && args.filePaths.length > 0) {
-			for (const fp of args.filePaths) {
-				const { name, content } = readPromptFile(fp);
-				prompts.push({ name, content });
-			}
-		} else if (args.prompts) {
-			prompts = args.prompts;
+		if (!args.folderPath) {
+			return formatError(
+				new Error(
+					'folderPath is required. Provide absolute path to folder containing .promptl files.',
+				),
+			);
 		}
 
-		if (prompts.length === 0) {
-			return formatError(new Error('No prompts provided. Use either prompts array or filePaths.'));
-		}
+		const prompts = readPromptsFromFolder(args.folderPath);
+		logger.info(`Read ${prompts.length} prompt(s) from ${args.folderPath}`);
 
 		// PRE-VALIDATE ALL PROMPTS BEFORE PUSHING
 		// If ANY prompt fails validation, return errors and push NOTHING
 		logger.info(`Validating ${prompts.length} prompt(s) before push...`);
 		const validation = await validateAllPrompts(prompts);
-		
+
 		if (!validation.valid) {
-			logger.warn(`Validation failed for ${validation.errors.length} prompt(s)`);
+			logger.warn(
+				`Validation failed for ${validation.errors.length} prompt(s)`,
+			);
 			return formatValidationErrors(validation.errors);
 		}
 		logger.info(`All ${prompts.length} prompt(s) passed validation`);
 
 		// Get existing prompts for diff computation
 		const existingDocs = await listDocuments('live');
-		
+
 		// Compute diff - this determines what needs to be added, modified, or deleted
-		const incoming = prompts.map(p => ({ path: p.name, content: p.content }));
+		const incoming = prompts.map((p) => ({
+			path: p.name,
+			content: p.content,
+		}));
 		const changes = computeDiff(incoming, existingDocs);
 
 		// Summarize changes
-		const added = changes.filter((c: DocumentChange) => c.status === 'added');
-		const modified = changes.filter((c: DocumentChange) => c.status === 'modified');
-		const deleted = changes.filter((c: DocumentChange) => c.status === 'deleted');
+		const added = changes.filter(
+			(c: DocumentChange) => c.status === 'added',
+		);
+		const modified = changes.filter(
+			(c: DocumentChange) => c.status === 'modified',
+		);
+		const deleted = changes.filter(
+			(c: DocumentChange) => c.status === 'deleted',
+		);
 
 		if (changes.length === 0) {
 			// No changes - reuse existingDocs instead of another API call
-			const currentNames = existingDocs.map(d => d.path);
-			return formatSuccess('No Changes Needed', 
+			const currentNames = existingDocs.map((d) => d.path);
+			return formatSuccess(
+				'No Changes Needed',
 				`All ${prompts.length} prompt(s) are already up to date.\n\n` +
-				`**Current LIVE prompts (${currentNames.length}):** ${currentNames.map(n => `\`${n}\``).join(', ')}`
+					`**Current LIVE prompts (${currentNames.length}):** ${currentNames.map((n) => `\`${n}\``).join(', ')}`,
 			);
 		}
 
 		// Push all changes in one batch
 		try {
-			const result = await deployToLive(changes, args.versionName || 'push');
-			
+			const result = await deployToLive(
+				changes,
+				args.versionName || 'push',
+			);
+
 			// Force refresh cache after mutations
 			const newNames = await forceRefreshAndGetNames();
 
@@ -474,7 +514,7 @@ async function handlePushPrompts(args: {
 			content += `- Modified: ${modified.length}\n`;
 			content += `- Deleted: ${deleted.length}\n`;
 			content += `- Documents processed: ${result.documentsProcessed}\n\n`;
-			
+
 			if (added.length > 0) {
 				content += `### Added\n${added.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
 			}
@@ -484,15 +524,17 @@ async function handlePushPrompts(args: {
 			if (deleted.length > 0) {
 				content += `### Deleted\n${deleted.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
 			}
-			
-			content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+
+			content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map((n) => `\`${n}\``).join(', ')}`;
 
 			return formatSuccess('Prompts Pushed to LIVE', content);
 		} catch (error) {
 			// Detailed error from API
 			if (error instanceof LatitudeApiError) {
 				return {
-					content: [{ type: 'text' as const, text: error.toMarkdown() }],
+					content: [
+						{ type: 'text' as const, text: error.toMarkdown() },
+					],
 					isError: true,
 				};
 			}
@@ -507,140 +549,132 @@ const AddPromptSchema = z.object({
 	prompts: z
 		.array(
 			z.object({
-				name: z.string().describe('Prompt name'),
-				content: z.string().describe('Prompt content'),
-			})
+				name: z
+					.string()
+					.describe(
+						'Prompt name/path (e.g. "my-prompt" or "folder/prompt")',
+					),
+				content: z
+					.string()
+					.describe('Full prompt content in PromptL format'),
+			}),
 		)
-		.optional()
-		.describe('Prompts to add/update - overwrites if exists, adds if new'),
-	filePaths: z
-		.array(z.string())
-		.optional()
-		.describe('File paths to .promptl files - overwrites if exists, adds if new'),
+		.describe(
+			'Prompts to add/update. Gets remote state, merges these prompts, then pushes all.',
+		),
 	versionName: z
 		.string()
 		.optional()
-		.describe('Optional version name (like git commit: feat/add-auth, fix/typo). Describes what changed.'),
+		.describe('Optional version name (like git commit message).'),
 });
 
+/**
+ * Add prompts using CLI-style approach:
+ * 1. Get ALL remote prompts
+ * 2. Merge new prompts into remote state (in /tmp)
+ * 3. Push ALL back as full sync
+ */
 async function handleAddPrompt(args: {
-	prompts?: Array<{ name: string; content: string }>;
-	filePaths?: string[];
+	prompts: Array<{ name: string; content: string }>;
 	versionName?: string;
 }): Promise<ToolResult> {
+	const tempDir = join(tmpdir(), `latitude-add-${Date.now()}`);
+
 	try {
-		// Build prompts from either direct input or file paths
-		let prompts: Array<{ name: string; content: string }> = [];
-		
-		if (args.filePaths && args.filePaths.length > 0) {
-			for (const fp of args.filePaths) {
-				const { name, content } = readPromptFile(fp);
-				prompts.push({ name, content });
-			}
-		} else if (args.prompts) {
-			prompts = args.prompts;
+		if (!args.prompts || args.prompts.length === 0) {
+			return formatError(new Error('prompts array is required.'));
 		}
 
-		if (prompts.length === 0) {
-			return formatError(new Error('No prompts provided. Use either prompts array or filePaths.'));
-		}
-
-		// PRE-VALIDATE ALL PROMPTS BEFORE ADDING
-		// If ANY prompt fails validation, return errors and add NOTHING
-		logger.info(`Validating ${prompts.length} prompt(s) before add...`);
-		const validation = await validateAllPrompts(prompts);
-		
-		if (!validation.valid) {
-			logger.warn(`Validation failed for ${validation.errors.length} prompt(s)`);
-			return formatValidationErrors(validation.errors);
-		}
-		logger.info(`All ${prompts.length} prompt(s) passed validation`);
-
-		// Get existing prompts (includes contentHash for fast comparison)
-		const existingDocs = await listDocuments('live');
-		// Use NORMALIZED paths as keys for reliable matching (handles /path vs path inconsistencies)
-		// Map to { path, contentHash } for fast hash-based comparison
-		const existingMap = new Map(
-			existingDocs.map((d) => [normalizePath(d.path), { path: d.path, contentHash: d.contentHash }])
+		logger.info(
+			`Add prompt: merging ${args.prompts.length} prompt(s) with remote state`,
 		);
 
-		// Build changes - ALWAYS overwrite if exists, add if new, NEVER delete
-		// Uses hash comparison for speed (avoids comparing 100KB+ content strings)
-		const changes: DocumentChange[] = [];
+		const existingDocs = await listDocuments('live');
+		logger.info(
+			`Fetched ${existingDocs.length} existing prompt(s) from remote`,
+		);
 
-		for (const prompt of prompts) {
-			const normalizedName = normalizePath(prompt.name);
-			const existingDoc = existingMap.get(normalizedName);
+		mkdirSync(tempDir, { recursive: true });
 
-			if (existingDoc) {
-				// Compare hashes instead of full content (much faster)
-				const localHash = computeContentHash(prompt.content);
-				if (existingDoc.contentHash !== localHash) {
-					// Use the EXISTING path from API to ensure compatibility
-					changes.push({
-						path: existingDoc.path,
-						content: prompt.content,
-						status: 'modified',
-					});
-				}
-				// If same hash, skip silently (unchanged)
-			} else {
-				// New prompt
-				changes.push({
-					path: prompt.name,
-					content: prompt.content,
-					status: 'added',
-				});
-			}
+		for (const doc of existingDocs) {
+			const filename = `${doc.path.replace(/\//g, '_')}.promptl`;
+			writeFileSync(join(tempDir, filename), doc.content, 'utf-8');
 		}
 
-		// Summarize
-		const added = changes.filter((c: DocumentChange) => c.status === 'added');
-		const modified = changes.filter((c: DocumentChange) => c.status === 'modified');
+		for (const prompt of args.prompts) {
+			const filename = `${prompt.name.replace(/\//g, '_')}.promptl`;
+			writeFileSync(join(tempDir, filename), prompt.content, 'utf-8');
+		}
+
+		const mergedPrompts = readPromptsFromFolder(tempDir);
+		logger.info(`Merged state: ${mergedPrompts.length} total prompt(s)`);
+
+		logger.info(
+			`Validating ${mergedPrompts.length} prompt(s) before push...`,
+		);
+		const validation = await validateAllPrompts(mergedPrompts);
+
+		if (!validation.valid) {
+			logger.warn(
+				`Validation failed for ${validation.errors.length} prompt(s)`,
+			);
+			return formatValidationErrors(validation.errors);
+		}
+
+		const incoming = mergedPrompts.map((p) => ({
+			path: p.name,
+			content: p.content,
+		}));
+		const changes = computeDiff(incoming, existingDocs);
+
+		const added = changes.filter(
+			(c: DocumentChange) => c.status === 'added',
+		);
+		const modified = changes.filter(
+			(c: DocumentChange) => c.status === 'modified',
+		);
 
 		if (changes.length === 0) {
-			// No changes - reuse existingDocs instead of another API call
-			const currentNames = existingDocs.map(d => d.path);
-			return formatSuccess('No Changes Needed', 
-				`All ${prompts.length} prompt(s) are already up to date.\n\n` +
-				`**Current LIVE prompts (${currentNames.length}):** ${currentNames.map(n => `\`${n}\``).join(', ')}`
+			const currentNames = existingDocs.map((d) => d.path);
+			return formatSuccess(
+				'No Changes Needed',
+				`All prompt(s) are already up to date.\n\n` +
+					`**Current LIVE prompts (${currentNames.length}):** ${currentNames.map((n) => `\`${n}\``).join(', ')}`,
 			);
 		}
 
-		// Push all changes in one batch
-		try {
-			const result = await deployToLive(changes, args.versionName || 'add');
-			
-			// Force refresh cache after mutations
-			const newNames = await forceRefreshAndGetNames();
+		const result = await deployToLive(changes, args.versionName || 'add');
+		const newNames = await forceRefreshAndGetNames();
 
-			let content = `**Summary:**\n`;
-			content += `- Added: ${added.length}\n`;
-			content += `- Updated: ${modified.length}\n`;
-			content += `- Documents processed: ${result.documentsProcessed}\n\n`;
-			
-			if (added.length > 0) {
-				content += `### Added\n${added.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
-			}
-			if (modified.length > 0) {
-				content += `### Updated\n${modified.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
-			}
-			
-			content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map(n => `\`${n}\``).join(', ')}`;
+		let content = `**Summary:**\n`;
+		content += `- Added: ${added.length}\n`;
+		content += `- Updated: ${modified.length}\n`;
+		content += `- Documents processed: ${result.documentsProcessed}\n\n`;
 
-			return formatSuccess('Prompts Added to LIVE', content);
-		} catch (error) {
-			// Detailed error from API
-			if (error instanceof LatitudeApiError) {
-				return {
-					content: [{ type: 'text' as const, text: error.toMarkdown() }],
-					isError: true,
-				};
-			}
-			throw error;
+		if (added.length > 0) {
+			content += `### Added\n${added.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
 		}
+		if (modified.length > 0) {
+			content += `### Updated\n${modified.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
+		}
+
+		content += `---\n**Current LIVE prompts (${newNames.length}):** ${newNames.map((n) => `\`${n}\``).join(', ')}`;
+
+		return formatSuccess('Prompts Added to LIVE', content);
 	} catch (error) {
+		if (error instanceof LatitudeApiError) {
+			return {
+				content: [{ type: 'text' as const, text: error.toMarkdown() }],
+				isError: true,
+			};
+		}
 		return formatError(error);
+	} finally {
+		if (existsSync(tempDir)) {
+			try {
+				rmSync(tempDir, { recursive: true, force: true });
+			} catch {}
+		}
 	}
 }
 
@@ -648,14 +682,18 @@ const PullPromptsSchema = z.object({
 	outputDir: z
 		.string()
 		.optional()
-		.describe('Output directory (default: ./prompts) - FULL SYNC: deletes ALL local .promptl files first'),
+		.describe(
+			'Output directory (default: ./prompts) - FULL SYNC: deletes ALL local .promptl files first',
+		),
 });
 
 async function handlePullPrompts(args: {
 	outputDir?: string;
 }): Promise<ToolResult> {
 	try {
-		const outputDir = args.outputDir ? resolve(args.outputDir) : getPromptsDir();
+		const outputDir = args.outputDir
+			? resolve(args.outputDir)
+			: getPromptsDir();
 
 		// Create directory if it doesn't exist
 		if (!existsSync(outputDir)) {
@@ -663,7 +701,9 @@ async function handlePullPrompts(args: {
 		}
 
 		// Delete existing .promptl files
-		const existingFiles = readdirSync(outputDir).filter((f) => f.endsWith('.promptl'));
+		const existingFiles = readdirSync(outputDir).filter((f) =>
+			f.endsWith('.promptl'),
+		);
 		for (const file of existingFiles) {
 			unlinkSync(join(outputDir, file));
 		}
@@ -672,7 +712,10 @@ async function handlePullPrompts(args: {
 		const docs = await listDocuments('live');
 
 		if (docs.length === 0) {
-			return formatSuccess('No Prompts to Pull', 'The project has no prompts.');
+			return formatSuccess(
+				'No Prompts to Pull',
+				'The project has no prompts.',
+			);
 		}
 
 		// Write files directly - listDocuments already returns full content
@@ -705,15 +748,11 @@ async function handlePullPrompts(args: {
 const DocsSchema = z.object({
 	action: z
 		.enum(['help', 'get', 'find'])
-		.describe('Action: help (overview), get (specific topic), find (search)'),
-	topic: z
-		.string()
-		.optional()
-		.describe('Topic name (for action: get)'),
-	query: z
-		.string()
-		.optional()
-		.describe('Search query (for action: find)'),
+		.describe(
+			'Action: help (overview), get (specific topic), find (search)',
+		),
+	topic: z.string().optional().describe('Topic name (for action: get)'),
+	query: z.string().optional().describe('Search query (for action: find)'),
 });
 
 async function handleDocs(args: {
@@ -730,14 +769,18 @@ async function handleDocs(args: {
 
 		case 'get':
 			if (!args.topic) {
-				return formatError(new Error('Topic is required for action: get'));
+				return formatError(
+					new Error('Topic is required for action: get'),
+				);
 			}
 			content = getDocs(args.topic);
 			break;
 
 		case 'find':
 			if (!args.query) {
-				return formatError(new Error('Query is required for action: find'));
+				return formatError(
+					new Error('Query is required for action: find'),
+				);
 			}
 			content = findDocs(args.query);
 			break;
@@ -768,7 +811,7 @@ export async function registerTools(server: McpServer): Promise<void> {
 			description: 'List all prompt names in LIVE version',
 			inputSchema: ListPromptsSchema,
 		},
-		handleListPrompts
+		handleListPrompts,
 	);
 
 	server.registerTool(
@@ -778,7 +821,9 @@ export async function registerTools(server: McpServer): Promise<void> {
 			description: 'Get full prompt content by name',
 			inputSchema: GetPromptSchema,
 		},
-		handleGetPrompt as (args: Record<string, unknown>) => Promise<ToolResult>
+		handleGetPrompt as (
+			args: Record<string, unknown>,
+		) => Promise<ToolResult>,
 	);
 
 	// Build dynamic description with prompt names and their variables
@@ -790,7 +835,9 @@ export async function registerTools(server: McpServer): Promise<void> {
 			description: runDesc,
 			inputSchema: RunPromptSchema,
 		},
-		handleRunPrompt as (args: Record<string, unknown>) => Promise<ToolResult>
+		handleRunPrompt as (
+			args: Record<string, unknown>,
+		) => Promise<ToolResult>,
 	);
 
 	server.registerTool(
@@ -801,7 +848,9 @@ export async function registerTools(server: McpServer): Promise<void> {
 				'FULL SYNC: Replace ALL prompts in LIVE. Deletes remote prompts not in your list. Use for initialization or complete sync.',
 			inputSchema: PushPromptsSchema,
 		},
-		handlePushPrompts as (args: Record<string, unknown>) => Promise<ToolResult>
+		handlePushPrompts as (
+			args: Record<string, unknown>,
+		) => Promise<ToolResult>,
 	);
 
 	server.registerTool(
@@ -812,7 +861,9 @@ export async function registerTools(server: McpServer): Promise<void> {
 				'FULL SYNC: Download all prompts from LIVE to local ./prompts/*.promptl files. Deletes existing local files first.',
 			inputSchema: PullPromptsSchema,
 		},
-		handlePullPrompts as (args: Record<string, unknown>) => Promise<ToolResult>
+		handlePullPrompts as (
+			args: Record<string, unknown>,
+		) => Promise<ToolResult>,
 	);
 
 	// Build dynamic description with available prompts
@@ -824,7 +875,9 @@ export async function registerTools(server: McpServer): Promise<void> {
 			description: addDesc,
 			inputSchema: AddPromptSchema,
 		},
-		handleAddPrompt as (args: Record<string, unknown>) => Promise<ToolResult>
+		handleAddPrompt as (
+			args: Record<string, unknown>,
+		) => Promise<ToolResult>,
 	);
 
 	server.registerTool(
@@ -835,8 +888,10 @@ export async function registerTools(server: McpServer): Promise<void> {
 				'Get documentation. Actions: help (overview), get (topic), find (search)',
 			inputSchema: DocsSchema,
 		},
-		handleDocs as (args: Record<string, unknown>) => Promise<ToolResult>
+		handleDocs as (args: Record<string, unknown>) => Promise<ToolResult>,
 	);
 
-	logger.info(`Registered 7 MCP tools (${cachedPromptNames.length} prompts cached)`);
+	logger.info(
+		`Registered 7 MCP tools (${cachedPromptNames.length} prompts cached)`,
+	);
 }

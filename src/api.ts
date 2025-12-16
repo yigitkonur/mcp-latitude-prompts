@@ -3,12 +3,9 @@
  * Based on OpenAPI spec v1.0.2 at https://gateway.latitude.so
  *
  * Endpoints used:
- * - GET  /projects/:id/versions - list versions
- * - POST /projects/:id/versions - create version (draft)
- * - POST /projects/:id/versions/:uuid/publish - publish to LIVE
  * - GET  /projects/:id/versions/:uuid/documents - list documents
  * - GET  /projects/:id/versions/:uuid/documents/:path - get document
- * - POST /projects/:id/versions/:uuid/documents/create-or-update - create/update document
+ * - POST /projects/:id/versions/:uuid/push - push changes (atomic create+publish)
  * - POST /projects/:id/versions/:uuid/documents/run - run document
  */
 
@@ -81,7 +78,6 @@ async function request<T>(
 	logger.debug(`API ${method} ${endpoint}`);
 
 	try {
-		// Add __internal: { source: 'api' } to all POST requests (required by Latitude API)
 		const body = options.body && method === 'POST'
 			? { ...options.body, __internal: { source: 'api' } }
 			: options.body;
@@ -105,14 +101,11 @@ async function request<T>(
 
 			try {
 				const parsed = JSON.parse(errorText);
-				// Capture the ENTIRE parsed response as details
-				// This ensures we never lose any error information from the API
 				const { name, errorCode, code, message, ...rest } = parsed;
 				errorData = {
 					name: name || 'APIError',
 					errorCode: errorCode || code || `HTTP_${response.status}`,
 					message: message || `HTTP ${response.status}`,
-					// Store ALL remaining fields as details
 					details: Object.keys(rest).length > 0 ? rest : undefined,
 				};
 			} catch {
@@ -127,7 +120,6 @@ async function request<T>(
 			throw new LatitudeApiError(errorData, response.status, errorText);
 		}
 
-		// Handle empty responses
 		const contentLength = response.headers.get('content-length');
 		if (contentLength === '0' || response.status === 204) {
 			return {} as T;
@@ -182,15 +174,11 @@ export class LatitudeApiError extends Error {
 		this.rawResponse = rawResponse;
 	}
 
-	/**
-	 * Extract detailed error messages from nested error structures
-	 */
 	getDetailedErrors(): string[] {
 		const errors: string[] = [];
 		
 		if (!this.details) return errors;
 
-		// Handle errors array in details
 		if (Array.isArray(this.details.errors)) {
 			for (const err of this.details.errors) {
 				if (typeof err === 'string') {
@@ -204,7 +192,6 @@ export class LatitudeApiError extends Error {
 			}
 		}
 
-		// Handle documents with errors
 		if (this.details.documents && typeof this.details.documents === 'object') {
 			const docs = this.details.documents as Record<string, unknown>;
 			for (const [docPath, docInfo] of Object.entries(docs)) {
@@ -220,7 +207,6 @@ export class LatitudeApiError extends Error {
 			}
 		}
 
-		// Handle validation errors object
 		if (this.details.validationErrors && typeof this.details.validationErrors === 'object') {
 			const valErrors = this.details.validationErrors as Record<string, unknown>;
 			for (const [field, fieldErrors] of Object.entries(valErrors)) {
@@ -234,7 +220,6 @@ export class LatitudeApiError extends Error {
 			}
 		}
 
-		// Handle cause field
 		if (this.details.cause) {
 			const cause = this.details.cause;
 			if (typeof cause === 'string') {
@@ -261,7 +246,6 @@ export class LatitudeApiError extends Error {
 			md += `\n**HTTP Status:** ${this.statusCode}\n`;
 		}
 
-		// Try to extract detailed errors first
 		const detailedErrors = this.getDetailedErrors();
 		if (detailedErrors.length > 0) {
 			md += `\n**Detailed Errors (${detailedErrors.length}):**\n`;
@@ -270,12 +254,10 @@ export class LatitudeApiError extends Error {
 			}
 		}
 
-		// Always show details if present (structured data from API)
 		if (this.details && Object.keys(this.details).length > 0) {
 			md += `\n**API Response Details:**\n\`\`\`json\n${JSON.stringify(this.details, null, 2)}\n\`\`\`\n`;
 		}
 
-		// Always show raw response if available (for debugging)
 		if (this.rawResponse && this.rawResponse !== JSON.stringify(this.details)) {
 			md += `\n**Raw API Response:**\n\`\`\`json\n${this.rawResponse}\n\`\`\`\n`;
 		}
@@ -283,19 +265,14 @@ export class LatitudeApiError extends Error {
 		return md;
 	}
 
-	/**
-	 * Get a concise error message suitable for per-prompt error tracking
-	 */
 	getConciseMessage(): string {
 		const detailed = this.getDetailedErrors();
 		if (detailed.length > 0) {
 			return detailed.join('; ');
 		}
-		// If no detailed errors, include details summary if available
 		if (this.details && Object.keys(this.details).length > 0) {
 			return `${this.message} | Details: ${JSON.stringify(this.details)}`;
 		}
-		// Last resort: include raw response snippet
 		if (this.rawResponse) {
 			const snippet = this.rawResponse.length > 200 
 				? this.rawResponse.substring(0, 200) + '...' 
@@ -310,31 +287,8 @@ export class LatitudeApiError extends Error {
 // API Functions
 // ============================================================================
 
-/**
- * Get project ID from config
- */
 export function getProjectId(): string {
 	return getConfig().projectId;
-}
-
-async function createVersion(name: string): Promise<Version> {
-	const projectId = getProjectId();
-	return request<Version>(`/projects/${projectId}/versions`, {
-		method: 'POST',
-		body: { name },
-	});
-}
-
-async function publishVersion(versionUuid: string, title?: string): Promise<Version> {
-	const projectId = getProjectId();
-	logger.debug(`Publishing version ${versionUuid} with title: ${title || '(none)'}`);
-	return request<Version>(
-		`/projects/${projectId}/versions/${versionUuid}/publish`,
-		{
-			method: 'POST',
-			body: title ? { title } : {},
-		}
-	);
 }
 
 export async function listDocuments(
@@ -346,8 +300,6 @@ export async function listDocuments(
 			`/projects/${projectId}/versions/${versionUuid}/documents`
 		);
 	} catch (error) {
-		// Handle new projects with no LIVE version yet
-		// The API returns 404 "NotFoundError" with "head commit not found" message
 		if (
 			error instanceof LatitudeApiError &&
 			error.statusCode === 404 &&
@@ -360,9 +312,6 @@ export async function listDocuments(
 	}
 }
 
-/**
- * Compute SHA-256 hash of content (matches Latitude's contentHash)
- */
 export function computeContentHash(content: string): string {
 	return createHash('sha256').update(content).digest('hex');
 }
@@ -378,115 +327,20 @@ export async function getDocument(
 	);
 }
 
-/**
- * Push response from the API
- */
-interface PushResponse {
-	versionUuid: string;
-	documentsProcessed: number;
-}
-
-/**
- * Push changes to a version
- * 
- * IMPORTANT: The Latitude API /push endpoint has a bug where 'modified' status
- * fails with "A document with the same path already exists" error for inherited
- * documents in drafts. Workaround: for modified docs, we first delete then add
- * in sequential push calls.
- */
-export async function pushChanges(
-	versionUuid: string,
-	changes: DocumentChange[]
-): Promise<PushResponse> {
-	const projectId = getProjectId();
-	
-	// Separate changes by type
-	const modified = changes.filter((c) => c.status === 'modified');
-	const nonModified = changes.filter((c) => c.status !== 'modified');
-	
-	let totalProcessed = 0;
-	
-	// Step 1: If there are modified docs, delete them first
-	if (modified.length > 0) {
-		const deleteChanges = modified.map((c) => ({
-			path: c.path,
-			content: '',
-			status: 'deleted' as const,
-		}));
-		
-		logger.info(`Deleting ${modified.length} modified doc(s) before re-adding...`);
-		
-		await request<PushResponse>(
-			`/projects/${projectId}/versions/${versionUuid}/push`,
-			{
-				method: 'POST',
-				body: { changes: deleteChanges },
-			}
-		);
-	}
-	
-	// Step 2: Push all adds (including modified-as-add) and deletes
-	const addChanges = modified.map((c) => ({
-		path: c.path,
-		content: c.content || '',
-		status: 'added' as const,
-	}));
-	
-	const otherChanges = nonModified.map((c) => ({
-		path: c.path,
-		content: c.content || '',
-		status: c.status,
-	}));
-	
-	const allChanges = [...addChanges, ...otherChanges];
-	
-	if (allChanges.length > 0) {
-		logger.info(`Pushing ${allChanges.length} change(s) to version ${versionUuid}`);
-		
-		const result = await request<PushResponse>(
-			`/projects/${projectId}/versions/${versionUuid}/push`,
-			{
-				method: 'POST',
-				body: { changes: allChanges },
-			}
-		);
-		
-		totalProcessed = result.documentsProcessed;
-	}
-	
-	return {
-		versionUuid,
-		documentsProcessed: totalProcessed || changes.length,
-	};
-}
-
-/**
- * Normalize document path for consistent comparison.
- * Handles leading/trailing slashes, whitespace, and ensures consistent format.
- * API may return paths with or without leading slash - this normalizes them.
- */
 export function normalizePath(path: string): string {
 	return path
 		.trim()
-		.replace(/^\/+/, '')  // Remove leading slashes
-		.replace(/\/+$/, '')  // Remove trailing slashes
-		.replace(/\/+/g, '/'); // Collapse multiple slashes
+		.replace(/^\/+/, '')
+		.replace(/\/+$/, '')
+		.replace(/\/+/g, '/');
 }
 
-/**
- * Compute diff between incoming prompts and existing prompts
- * Returns only the changes that need to be made
- * 
- * IMPORTANT: Uses normalized paths and content hashes for fast comparison.
- * Handles API inconsistencies where paths may have leading slashes.
- */
 export function computeDiff(
 	incoming: Array<{ path: string; content: string }>,
 	existing: Document[]
 ): DocumentChange[] {
 	const changes: DocumentChange[] = [];
 	
-	// Build map with NORMALIZED paths as keys, storing path + contentHash for fast comparison
 	const existingMap = new Map(
 		existing.map((d) => [normalizePath(d.path), { path: d.path, contentHash: d.contentHash }])
 	);
@@ -494,23 +348,19 @@ export function computeDiff(
 		incoming.map((p) => normalizePath(p.path))
 	);
 
-	// Check each incoming prompt
 	for (const prompt of incoming) {
 		const normalizedPath = normalizePath(prompt.path);
 		const existingDoc = existingMap.get(normalizedPath);
 		
 		if (!existingDoc) {
-			// New prompt
 			changes.push({
 				path: prompt.path,
 				content: prompt.content,
 				status: 'added',
 			});
 		} else {
-			// Compare hashes for speed (avoid comparing large content strings)
 			const localHash = computeContentHash(prompt.content);
 			if (existingDoc.contentHash !== localHash) {
-				// Modified prompt - use the EXISTING path to ensure API compatibility
 				changes.push({
 					path: existingDoc.path,
 					content: prompt.content,
@@ -518,10 +368,8 @@ export function computeDiff(
 				});
 			}
 		}
-		// If same hash, no change needed (don't include in changes)
 	}
 
-	// Check for deleted prompts (exist remotely but not in incoming)
 	for (const [normalizedExistingPath, doc] of existingMap.entries()) {
 		if (!incomingPaths.has(normalizedExistingPath)) {
 			changes.push({
@@ -555,22 +403,13 @@ export async function runDocument(
 	);
 }
 
-interface FailedDocument {
-	path: string;
-	error: string;
-	code: string;           // Error code like 'message-tag-inside-message'
-	rootCause: string;
-	suggestion: string;
-	location?: {
-		line: number;
-		column: number;
-	};
-	codeFrame?: string;     // Formatted code context with ^ indicator
-}
+// ============================================================================
+// Validation
+// ============================================================================
 
 export interface ValidationIssue {
 	type: 'error' | 'warning';
-	code: string;           // Error code
+	code: string;
 	message: string;
 	rootCause: string;
 	suggestion: string;
@@ -578,12 +417,9 @@ export interface ValidationIssue {
 		line: number;
 		column: number;
 	};
-	codeFrame?: string;     // Formatted code context
+	codeFrame?: string;
 }
 
-/**
- * Error code to human-readable fix suggestion mapping
- */
 const ERROR_SUGGESTIONS: Record<string, { rootCause: string; suggestion: string }> = {
 	'message-tag-inside-message': {
 		rootCause: 'Message/role tags (<system>, <user>, <assistant>, <tool>) cannot be nested inside each other.',
@@ -627,25 +463,17 @@ const ERROR_SUGGESTIONS: Record<string, { rootCause: string; suggestion: string 
 	},
 };
 
-/**
- * Pre-validate PromptL content using the official promptl-ai library.
- * Returns detailed, actionable error messages with code frames.
- * EXPORTED for use by tools.ts to pre-validate before pushing.
- */
 export async function validatePromptLContent(content: string, path: string): Promise<ValidationIssue[]> {
 	const issues: ValidationIssue[] = [];
 	
 	try {
-		// Use official promptl-ai scan function for validation
 		const result = await scan({
 			prompt: content,
 			fullPath: path,
-			requireConfig: false, // Don't require config for flexibility
+			requireConfig: false,
 		});
 		
-		// Convert CompileErrors to our ValidationIssue format
 		for (const compileError of result.errors) {
-			// Get human-readable suggestion based on error code
 			const suggestionInfo = ERROR_SUGGESTIONS[compileError.code] || {
 				rootCause: compileError.message,
 				suggestion: 'Review the PromptL documentation for correct syntax.',
@@ -661,11 +489,10 @@ export async function validatePromptLContent(content: string, path: string): Pro
 					line: compileError.start.line,
 					column: compileError.start.column,
 				} : undefined,
-				codeFrame: compileError.frame, // The beautiful formatted code frame!
+				codeFrame: compileError.frame,
 			});
 		}
 	} catch (err) {
-		// Handle parse errors (thrown, not accumulated)
 		if (err instanceof CompileError) {
 			const suggestionInfo = ERROR_SUGGESTIONS[err.code] || {
 				rootCause: err.message,
@@ -685,7 +512,6 @@ export async function validatePromptLContent(content: string, path: string): Pro
 				codeFrame: err.frame,
 			});
 		} else {
-			// Unknown error - still report it
 			issues.push({
 				type: 'error',
 				code: 'unknown-error',
@@ -699,172 +525,47 @@ export async function validatePromptLContent(content: string, path: string): Pro
 	return issues;
 }
 
+// ============================================================================
+// Push API - SDK-style atomic push
+// ============================================================================
+
+interface PushResponse {
+	commitUuid: string;
+	documentsProcessed?: number;
+}
+
 /**
- * Identify failing documents using binary search for efficiency.
- * For N documents, worst case is O(N log N) API calls instead of O(N).
+ * Push changes to a version atomically.
+ * This is the SDK-style push that creates a new version with all changes applied.
+ * 
+ * Endpoint: POST /projects/:projectId/versions/:versionUuid/push
+ * Body: { changes: [...] }
+ * Returns: { commitUuid: string } - the new version UUID
  */
-async function identifyFailingDocuments(
+async function pushToVersion(
+	versionUuid: string,
 	changes: DocumentChange[]
-): Promise<FailedDocument[]> {
-	const failed: FailedDocument[] = [];
-	const nonDeleteChanges = changes.filter(c => c.status !== 'deleted');
+): Promise<PushResponse> {
+	const projectId = getProjectId();
 	
-	if (nonDeleteChanges.length === 0) return failed;
+	const changesPayload = changes.map((c) => ({
+		path: c.path,
+		content: c.content || '',
+		status: c.status,
+		contentHash: c.status !== 'deleted' ? computeContentHash(c.content || '') : undefined,
+	}));
 	
-	// First, run local validation to catch obvious issues without API calls
-	for (const change of nonDeleteChanges) {
-		if (!change.content) continue;
-		
-		const localIssues = await validatePromptLContent(change.content, change.path);
-		const errors = localIssues.filter((i: ValidationIssue) => i.type === 'error');
-		
-		if (errors.length > 0) {
-			const mainError = errors[0];
-			failed.push({
-				path: change.path,
-				error: mainError.message,
-				code: mainError.code,
-				rootCause: mainError.rootCause,
-				suggestion: mainError.suggestion,
-				location: mainError.location,
-				codeFrame: mainError.codeFrame,
-			});
+	logger.info(`Pushing ${changes.length} change(s) to version ${versionUuid}`);
+	
+	return request<PushResponse>(
+		`/projects/${projectId}/versions/${versionUuid}/push`,
+		{
+			method: 'POST',
+			body: { changes: changesPayload },
 		}
-	}
-	
-	// If we found local validation errors, return those first
-	if (failed.length > 0) {
-		logger.info(`Found ${failed.length} document(s) with local validation errors`);
-		return failed;
-	}
-	
-	// If local validation passed, use binary search to find API-level failures
-	logger.info(`Local validation passed, testing ${nonDeleteChanges.length} document(s) against API...`);
-	
-	// For small batches (<=5), test individually
-	if (nonDeleteChanges.length <= 5) {
-		return await testDocumentsIndividually(nonDeleteChanges);
-	}
-	
-	// For larger batches, use binary search
-	return await binarySearchFailures(nonDeleteChanges);
+	);
 }
 
-/**
- * Test documents individually (for small batches)
- */
-async function testDocumentsIndividually(
-	changes: DocumentChange[]
-): Promise<FailedDocument[]> {
-	const failed: FailedDocument[] = [];
-	
-	for (const change of changes) {
-		const result = await testSingleDocument(change);
-		if (result) {
-			failed.push(result);
-		}
-	}
-	
-	return failed;
-}
-
-/**
- * Test a single document and return failure details if it fails
- */
-async function testSingleDocument(
-	change: DocumentChange
-): Promise<FailedDocument | null> {
-	try {
-		const testDraft = await createVersion(`val-${Date.now()}-${change.path.slice(0, 20)}`);
-		await pushChanges(testDraft.uuid, [change]);
-		await publishVersion(testDraft.uuid);
-		return null; // Success
-	} catch (error) {
-		const errorMsg = error instanceof LatitudeApiError 
-			? error.message 
-			: (error instanceof Error ? error.message : 'Unknown error');
-		
-		// Try to provide better root cause based on error patterns
-		let rootCause = 'The Latitude API rejected this document during publish validation.';
-		let suggestion = 'Review the document content for syntax errors or invalid configuration.';
-		
-		if (errorMsg.includes('errors in the updated documents')) {
-			rootCause = 'The document has PromptL syntax or configuration errors that passed local validation but failed server-side validation.';
-			suggestion = 'Check for: 1) Invalid model/provider combination, 2) Malformed schema definition, 3) Invalid template syntax ({{ }}).';
-		}
-		
-		// Run local validation to give more context
-		if (change.content) {
-			const localIssues = await validatePromptLContent(change.content, change.path);
-			if (localIssues.length > 0) {
-				const warnings = localIssues.filter((i: ValidationIssue) => i.type === 'warning');
-				if (warnings.length > 0) {
-					suggestion += `\n\nAdditional observations:\n${warnings.map((w: ValidationIssue) => `- ${w.message}: ${w.suggestion}`).join('\n')}`;
-				}
-			}
-		}
-		
-		return {
-			path: change.path,
-			error: errorMsg,
-			code: 'api-validation-error',
-			rootCause,
-			suggestion,
-		};
-	}
-}
-
-/**
- * Use binary search to efficiently find failures in large batches.
- * Splits the batch in half, tests each half, and recurses on failing halves.
- */
-async function binarySearchFailures(
-	changes: DocumentChange[]
-): Promise<FailedDocument[]> {
-	// Base case: single document
-	if (changes.length === 1) {
-		const result = await testSingleDocument(changes[0]);
-		return result ? [result] : [];
-	}
-	
-	// Test the entire batch first
-	const batchValid = await testBatch(changes);
-	if (batchValid) {
-		return []; // All documents in this batch are valid
-	}
-	
-	// Batch has failures - split and recurse
-	const mid = Math.floor(changes.length / 2);
-	const left = changes.slice(0, mid);
-	const right = changes.slice(mid);
-	
-	// Test both halves in parallel
-	const [leftFailures, rightFailures] = await Promise.all([
-		binarySearchFailures(left),
-		binarySearchFailures(right),
-	]);
-	
-	return [...leftFailures, ...rightFailures];
-}
-
-/**
- * Test if a batch of documents can be published successfully
- */
-async function testBatch(changes: DocumentChange[]): Promise<boolean> {
-	try {
-		const testDraft = await createVersion(`batch-val-${Date.now()}`);
-		await pushChanges(testDraft.uuid, changes);
-		await publishVersion(testDraft.uuid);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Create a synthetic Version object for no-op deploys.
- * Returns a fully populated Version with all required fields.
- */
 function createNoOpVersion(): Version {
 	const now = new Date().toISOString();
 	return {
@@ -879,12 +580,12 @@ function createNoOpVersion(): Version {
 }
 
 /**
- * Deploy changes to LIVE version using the proper workflow:
- * 1. Create a draft version
- * 2. Push all changes to the draft (batch)
- * 3. Publish the draft to make it LIVE
+ * Deploy changes to LIVE version using SDK-style atomic push.
  * 
- * This is the same workflow the CLI uses, ensuring proper validation.
+ * This matches the CLI's approach:
+ * - Single POST to /versions/live/push with all changes
+ * - Returns the new committed version UUID
+ * - No separate create→push→publish workflow
  */
 export async function deployToLive(
 	changes: DocumentChange[],
@@ -901,7 +602,6 @@ export async function deployToLive(
 		};
 	}
 
-	// Filter out unchanged items (they shouldn't be sent to API)
 	const actualChanges = changes.filter(c => c.status !== 'unchanged');
 	
 	if (actualChanges.length === 0) {
@@ -915,77 +615,38 @@ export async function deployToLive(
 		};
 	}
 
-	// Categorize changes for logging and return value
 	const added = actualChanges.filter((c) => c.status === 'added').map((c) => c.path);
 	const modified = actualChanges.filter((c) => c.status === 'modified').map((c) => c.path);
 	const deleted = actualChanges.filter((c) => c.status === 'deleted').map((c) => c.path);
 	
 	logger.info(`Deploying to LIVE: ${added.length} added, ${modified.length} modified, ${deleted.length} deleted`);
 
-	// Step 1: Create a new draft version
-	const draftName = `MCP deploy ${new Date().toISOString()}`;
-	logger.info(`Creating draft version: ${draftName}`);
-	const draft = await createVersion(draftName);
-	logger.info(`Draft created: ${draft.uuid}`);
-
-	// Step 2: Push all changes to the draft in ONE batch
-	logger.info(`Pushing ${actualChanges.length} change(s) to draft...`);
-	const pushResult = await pushChanges(draft.uuid, actualChanges);
-	logger.info(`Push complete: ${pushResult.documentsProcessed} documents processed`);
-
-	// Step 3: Publish the draft to make it LIVE
-	logger.info(`Publishing draft ${draft.uuid} to LIVE...`);
 	try {
-		const published = await publishVersion(draft.uuid, draftName);
-		logger.info(`Published successfully! Version is now LIVE: ${published.uuid}`);
-
+		const result = await pushToVersion('live', actualChanges);
+		
+		logger.info(`Push successful! New version: ${result.commitUuid}`);
+		
+		const now = new Date().toISOString();
 		return {
-			version: published,
-			documentsProcessed: pushResult.documentsProcessed,
+			version: {
+				id: 0,
+				uuid: result.commitUuid,
+				projectId: 0,
+				message: _versionName || 'MCP push',
+				createdAt: now,
+				updatedAt: now,
+				status: 'live',
+			},
+			documentsProcessed: result.documentsProcessed || actualChanges.length,
 			added,
 			modified,
 			deleted,
 		};
-	} catch (publishError) {
-		// Publish failed - identify which document(s) have validation errors
-		logger.warn('Batch publish failed, identifying problematic documents...');
-		const failedDocs = await identifyFailingDocuments(actualChanges);
-		
-		if (failedDocs.length > 0) {
-			// Build detailed, actionable error message for LLM consumption
-			const errorLines: string[] = [];
-			for (const doc of failedDocs) {
-				errorLines.push(`\n## ❌ ${doc.path}`);
-				errorLines.push(`**Error Code:** \`${doc.code}\``);
-				errorLines.push(`**Error:** ${doc.error}`);
-				errorLines.push(`**Root Cause:** ${doc.rootCause}`);
-				if (doc.location) {
-					errorLines.push(`**Location:** Line ${doc.location.line}, Column ${doc.location.column}`);
-				}
-				if (doc.codeFrame) {
-					errorLines.push(`**Code Context:**\n\`\`\`\n${doc.codeFrame}\n\`\`\``);
-				}
-				errorLines.push(`**Fix:** ${doc.suggestion}`);
-			}
-			
-			const message = `${failedDocs.length} document(s) failed validation:${errorLines.join('\n')}`;
-			
-			throw new LatitudeApiError(
-				{
-					name: 'DocumentValidationError',
-					errorCode: 'DOCUMENT_VALIDATION_FAILED',
-					message,
-					details: { 
-						failedDocuments: failedDocs,
-						totalFailed: failedDocs.length,
-						failedPaths: failedDocs.map(d => d.path),
-					},
-				},
-				422
-			);
+	} catch (error) {
+		if (error instanceof LatitudeApiError) {
+			logger.error(`Push failed: ${error.message}`);
+			throw error;
 		}
-		
-		// Re-throw original error if we couldn't identify specific failures
-		throw publishError;
+		throw error;
 	}
 }

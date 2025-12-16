@@ -238,13 +238,9 @@ Action Required: Fix the errors above, then retry.
 ### Workflow 5: Full Sync (Initialization)
 
 ```bash
-# Push local prompts to LIVE - deletes remote prompts not in your list
+# Push local prompts to LIVE - deletes remote prompts not in your folder
 push_prompts({
-  filePaths: [
-    "./prompts/prompt-a.promptl",
-    "./prompts/prompt-b.promptl",
-    "./prompts/prompt-c.promptl"
-  ],
+  folderPath: "/absolute/path/to/prompts",
   versionName: "feat/initial-prompts"  # Optional
 })
 ```
