@@ -134,9 +134,10 @@ function getPromptsDir(): string {
  * Read all .promptl files from a folder.
  * Returns array of { name, content } where name is derived from filename.
  */
-function readPromptsFromFolder(
-	folderPath: string,
-): Array<{ name: string; content: string }> {
+function readPromptsFromFolder(folderPath: string): {
+	prompts: Array<{ name: string; content: string }>;
+	conversions: string[];
+} {
 	const resolvedPath = resolve(folderPath);
 	if (!existsSync(resolvedPath)) {
 		throw new Error(`Folder not found: ${resolvedPath}`);
@@ -150,14 +151,21 @@ function readPromptsFromFolder(
 	}
 
 	const prompts: Array<{ name: string; content: string }> = [];
+	const conversions: string[] = [];
 	for (const file of files) {
 		const filePath = join(resolvedPath, file);
 		const content = readFileSync(filePath, 'utf-8');
-		const name = file.replace(/\.promptl$/, '').replace(/_/g, '/');
+		// Remove .promptl extension, convert . to - for API compatibility (only letters, numbers, '.', '-', '_' allowed)
+		const baseName = file.replace(/\.promptl$/, '');
+		// Replace dots with dashes (API allows dots but it's cleaner as dashes)
+		const name = baseName.replace(/\./g, '-');
+		if (baseName !== name) {
+			conversions.push(`${file} → ${name}`);
+		}
 		prompts.push({ name, content });
 	}
 
-	return prompts;
+	return { prompts, conversions };
 }
 
 // Format available prompts for description
@@ -452,7 +460,7 @@ async function handlePushPrompts(args: {
 			);
 		}
 
-		const prompts = readPromptsFromFolder(args.folderPath);
+		const { prompts, conversions } = readPromptsFromFolder(args.folderPath);
 		logger.info(`Read ${prompts.length} prompt(s) from ${args.folderPath}`);
 
 		// PRE-VALIDATE ALL PROMPTS BEFORE PUSHING
@@ -514,6 +522,12 @@ async function handlePushPrompts(args: {
 			content += `- Modified: ${modified.length}\n`;
 			content += `- Deleted: ${deleted.length}\n`;
 			content += `- Documents processed: ${result.documentsProcessed}\n\n`;
+
+			if (conversions.length > 0) {
+				content += `### ⚠️ Auto-converted Names\n`;
+				content += `Dots (.) in filenames were converted to underscores (_) for API compatibility:\n`;
+				content += conversions.map((c) => `- ${c}`).join('\n') + '\n\n';
+			}
 
 			if (added.length > 0) {
 				content += `### Added\n${added.map((c: DocumentChange) => `- \`${c.path}\``).join('\n')}\n\n`;
@@ -606,7 +620,7 @@ async function handleAddPrompt(args: {
 			writeFileSync(join(tempDir, filename), prompt.content, 'utf-8');
 		}
 
-		const mergedPrompts = readPromptsFromFolder(tempDir);
+		const { prompts: mergedPrompts } = readPromptsFromFolder(tempDir);
 		logger.info(`Merged state: ${mergedPrompts.length} total prompt(s)`);
 
 		logger.info(

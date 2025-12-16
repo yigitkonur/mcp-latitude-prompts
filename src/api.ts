@@ -526,7 +526,7 @@ export async function validatePromptLContent(content: string, path: string): Pro
 }
 
 // ============================================================================
-// Push API - SDK-style atomic push
+// Push API - Draft → Push → Merge workflow
 // ============================================================================
 
 interface PushResponse {
@@ -534,13 +534,31 @@ interface PushResponse {
 	documentsProcessed?: number;
 }
 
+interface CreateVersionResponse {
+	uuid: string;
+	id: number;
+}
+
 /**
- * Push changes to a version atomically.
- * This is the SDK-style push that creates a new version with all changes applied.
- * 
- * Endpoint: POST /projects/:projectId/versions/:versionUuid/push
- * Body: { changes: [...] }
- * Returns: { commitUuid: string } - the new version UUID
+ * Create a new draft version based on HEAD (live).
+ */
+async function createDraftVersion(name?: string): Promise<CreateVersionResponse> {
+	const projectId = getProjectId();
+	const timestamp = Date.now();
+	const versionName = name || `mcp-draft-${timestamp}`;
+	logger.info(`Creating draft version: ${versionName}`);
+	
+	return request<CreateVersionResponse>(
+		`/projects/${projectId}/versions`,
+		{
+			method: 'POST',
+			body: { name: versionName },
+		}
+	);
+}
+
+/**
+ * Push changes to a draft version.
  */
 async function pushToVersion(
 	versionUuid: string,
@@ -580,12 +598,12 @@ function createNoOpVersion(): Version {
 }
 
 /**
- * Deploy changes to LIVE version using SDK-style atomic push.
+ * Deploy changes to LIVE version using draft→push→merge workflow.
  * 
- * This matches the CLI's approach:
- * - Single POST to /versions/live/push with all changes
- * - Returns the new committed version UUID
- * - No separate create→push→publish workflow
+ * Workflow:
+ * 1. Create a new draft version
+ * 2. Push all changes to the draft
+ * 3. Merge the draft to live
  */
 export async function deployToLive(
 	changes: DocumentChange[],
@@ -622,29 +640,33 @@ export async function deployToLive(
 	logger.info(`Deploying to LIVE: ${added.length} added, ${modified.length} modified, ${deleted.length} deleted`);
 
 	try {
-		const result = await pushToVersion('live', actualChanges);
+		// Step 1: Create a draft version
+		const draft = await createDraftVersion(_versionName);
+		logger.info(`Created draft version: ${draft.uuid}`);
 		
-		logger.info(`Push successful! New version: ${result.commitUuid}`);
+		// Step 2: Push changes to the draft - this creates a new committed version
+		const pushResult = await pushToVersion(draft.uuid, actualChanges);
+		logger.info(`Pushed changes. New commit: ${pushResult.commitUuid}`);
 		
 		const now = new Date().toISOString();
 		return {
 			version: {
-				id: 0,
-				uuid: result.commitUuid,
+				id: draft.id,
+				uuid: pushResult.commitUuid,
 				projectId: 0,
 				message: _versionName || 'MCP push',
 				createdAt: now,
 				updatedAt: now,
-				status: 'live',
+				status: 'merged',
 			},
-			documentsProcessed: result.documentsProcessed || actualChanges.length,
+			documentsProcessed: pushResult.documentsProcessed || actualChanges.length,
 			added,
 			modified,
 			deleted,
 		};
 	} catch (error) {
 		if (error instanceof LatitudeApiError) {
-			logger.error(`Push failed: ${error.message}`);
+			logger.error(`Deploy failed: ${error.message}`);
 			throw error;
 		}
 		throw error;
