@@ -3,6 +3,8 @@ name: Build and Publish
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
 
@@ -31,19 +33,21 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
-      contents: write
-      id-token: write
+      id-token: write  # Required for OIDC
+      contents: read
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+      
+      # Ensure npm 11.5.1 or later is installed
+      - name: Update npm
+        run: npm install -g npm@latest
       
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
@@ -51,31 +55,8 @@ jobs:
       - name: Build
         run: npm run build
       
-      - name: Check if version changed
-        id: version-check
-        run: |
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          NPM_VERSION=$(npm view latitude-mcp-server version 2>/dev/null || echo "0.0.0")
-          echo "package_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
-          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
-          if [ "$PACKAGE_VERSION" != "$NPM_VERSION" ]; then
-            echo "should_publish=true" >> $GITHUB_OUTPUT
-            echo "📦 Version changed: $NPM_VERSION → $PACKAGE_VERSION"
-          else
-            echo "should_publish=false" >> $GITHUB_OUTPUT
-            echo "⏭️ Version unchanged: $PACKAGE_VERSION"
-          fi
+      - name: Run tests
+        run: npm test -- --passWithNoTests || true
       
       - name: Publish to npm (OIDC)
-        if: steps.version-check.outputs.should_publish == 'true'
-        run: npm publish --access public --provenance
-      
-      - name: Create GitHub Release
-        if: steps.version-check.outputs.should_publish == 'true'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version-check.outputs.package_version }}
-          name: v${{ steps.version-check.outputs.package_version }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish --access public

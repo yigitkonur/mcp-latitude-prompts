@@ -584,6 +584,28 @@ async function pushToVersion(
 	);
 }
 
+interface PublishResponse {
+	uuid: string;
+	status: string;
+}
+
+/**
+ * Publish a draft version to LIVE.
+ * This is the final step that makes changes visible.
+ */
+async function publishVersion(versionUuid: string): Promise<PublishResponse> {
+	const projectId = getProjectId();
+	logger.info(`Publishing version ${versionUuid} to LIVE`);
+	
+	return request<PublishResponse>(
+		`/projects/${projectId}/versions/${versionUuid}/publish`,
+		{
+			method: 'POST',
+			body: {},
+		}
+	);
+}
+
 function createNoOpVersion(): Version {
 	const now = new Date().toISOString();
 	return {
@@ -648,11 +670,15 @@ export async function deployToLive(
 		const pushResult = await pushToVersion(draft.uuid, actualChanges);
 		logger.info(`Pushed changes. New commit: ${pushResult.commitUuid}`);
 		
+		// Step 3: Publish the committed version to LIVE
+		const publishResult = await publishVersion(pushResult.commitUuid);
+		logger.info(`Published to LIVE: ${publishResult.uuid}, status: ${publishResult.status}`);
+		
 		const now = new Date().toISOString();
 		return {
 			version: {
 				id: draft.id,
-				uuid: pushResult.commitUuid,
+				uuid: publishResult.uuid,
 				projectId: 0,
 				message: _versionName || 'MCP push',
 				createdAt: now,
