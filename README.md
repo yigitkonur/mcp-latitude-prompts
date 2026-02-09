@@ -1,10 +1,10 @@
-# Latitude MCP Server
+# MCP Latitude AI
 
 > **AI-powered prompt management** for [Latitude.so](https://latitude.so) via Model Context Protocol
 
 Manage PromptL prompts directly from Claude, Windsurf, or any MCP client. Features **intelligent validation**, **dynamic tool descriptions**, and **git-style versioning**.
 
-[![npm version](https://img.shields.io/npm/v/latitude-mcp-server.svg)](https://www.npmjs.com/package/latitude-mcp-server)
+[![npm version](https://img.shields.io/npm/v/mcp-latitude-ai.svg)](https://www.npmjs.com/package/mcp-latitude-ai)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 
 ---
@@ -26,7 +26,7 @@ Manage PromptL prompts directly from Claude, Windsurf, or any MCP client. Featur
 ### Installation
 
 ```bash
-npm install -g latitude-mcp-server
+npm install -g mcp-latitude-ai
 ```
 
 ### Configuration
@@ -49,7 +49,7 @@ Add to your MCP client config (e.g., Claude Desktop):
   "mcpServers": {
     "latitude": {
       "command": "npx",
-      "args": ["latitude-mcp-server"],
+      "args": ["mcp-latitude-ai"],
       "env": {
         "LATITUDE_API_KEY": "your-api-key",
         "LATITUDE_PROJECT_ID": "your-project-id"
@@ -323,7 +323,7 @@ npx @modelcontextprotocol/inspector \
 npx @modelcontextprotocol/inspector \
   -e LATITUDE_API_KEY=your-key \
   -e LATITUDE_PROJECT_ID=your-id \
-  --cli npx -y latitude-mcp-server@3.1.0 \
+  --cli npx -y mcp-latitude-ai@3.1.0 \
   --method tools/call \
   --tool-name list_prompts
 ```
@@ -348,7 +348,7 @@ nodemon --watch src --exec "npm run build && node dist/index.js"
 ## Project Structure
 
 ```
-latitude-mcp-server/
+mcp-latitude-ai/
 ├── src/
 │   ├── docs/              # Documentation system (52 topics)
 │   │   ├── types.ts       # Type definitions
@@ -747,14 +747,14 @@ ISC License - see LICENSE file for details
 - [Latitude Platform](https://latitude.so)
 - [Latitude Documentation](https://docs.latitude.so)
 - [Model Context Protocol](https://modelcontextprotocol.io)
-- [npm Package](https://www.npmjs.com/package/latitude-mcp-server)
-- [GitHub Repository](https://github.com/yigitkonur/latitude-mcp-server)
+- [npm Package](https://www.npmjs.com/package/mcp-latitude-ai)
+- [GitHub Repository](https://github.com/yigitkonur/mcp-latitude-ai)
 
 ---
 
 ## Support
 
-- **Issues:** [GitHub Issues](https://github.com/yigitkonur/latitude-mcp-server/issues)
+- **Issues:** [GitHub Issues](https://github.com/yigitkonur/mcp-latitude-ai/issues)
 - **Documentation:** Use `docs({ action: "help" })` tool
 - **Latitude Support:** [Latitude Discord](https://discord.gg/latitude)
 

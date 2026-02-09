@@ -1,5 +1,5 @@
 {
-  "name": "latitude-mcp-server",
+  "name": "mcp-latitude-ai",
   "version": "4.0.4",
   "description": "Simplified MCP server for Latitude.so prompt management - 8 focused tools for push, pull, run, and manage prompts",
   "main": "dist/index.js",
@@ -7,9 +7,10 @@
   "type": "commonjs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yigitkonur/latitude-mcp-server.git"
+    "url": "https://github.com/yigitkonur/mcp-latitude-ai.git"
   },
   "bin": {
+    "mcp-latitude-ai": "./dist/index.js",
     "latitude-mcp": "./dist/index.js",
     "latitude-mcp-server": "./dist/index.js"
   },
@@ -24,6 +25,9 @@
     "update:deps": "npx npm-check-updates -u && npm install --legacy-peer-deps",
     "format": "prettier --write 'src/**/*.ts' 'scripts/**/*.js'",
     "cli": "npm run build && node dist/index.js",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major",
     "mcp:stdio": "npm run build && TRANSPORT_MODE=stdio node dist/index.js",
     "mcp:http": "npm run build && TRANSPORT_MODE=http node dist/index.js",
     "mcp:inspect": "npm run build && (TRANSPORT_MODE=http node dist/index.js &) && sleep 2 && npx @modelcontextprotocol/inspector http://localhost:3000/mcp",
