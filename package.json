@@ -1,6 +1,6 @@
 {
   "name": "mcp-latitude-ai",
-  "version": "4.0.5",
+  "version": "4.0.6",
   "description": "Simplified MCP server for Latitude.so prompt management - 8 focused tools for push, pull, run, and manage prompts",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
