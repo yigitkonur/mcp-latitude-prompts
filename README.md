@@ -26,7 +26,7 @@ Manage PromptL prompts directly from Claude, Windsurf, or any MCP client. Featur
 ### Installation
 
 ```bash
-npm install -g mcp-latitude-ai
+pnpm add -g mcp-latitude-ai
 ```
 
 ### Configuration
@@ -289,7 +289,7 @@ Current LIVE prompts (3): prompt-a, prompt-b, prompt-c
 ### Build
 
 ```bash
-npm run build  # Compiles TypeScript to dist/
+pnpm build  # Compiles TypeScript to dist/
 ```
 
 ### Testing with MCP Inspector
@@ -332,15 +332,15 @@ npx @modelcontextprotocol/inspector \
 
 ```bash
 # Build and run
-npm run build
+pnpm build
 node dist/index.js
 
 # With environment variables
 LATITUDE_API_KEY=xxx LATITUDE_PROJECT_ID=yyy node dist/index.js
 
 # Watch mode (requires nodemon)
-npm install -g nodemon
-nodemon --watch src --exec "npm run build && node dist/index.js"
+pnpm add -g nodemon
+nodemon --watch src --exec "pnpm build && node dist/index.js"
 ```
 
 ---
@@ -731,7 +731,7 @@ Follow the fix suggestion - errors are LLM-actionable!
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run `npm run build` to verify
+4. Run `pnpm build` to verify
 5. Submit a pull request
 
 ---
