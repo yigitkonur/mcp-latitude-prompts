@@ -78,7 +78,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.23.0",
     "dotenv": "^17.2.3",
-    "promptl-ai": "^0.9.4",
+    "promptl-ai": "^0.10.0",
     "zod": "^4.1.13"
   },
   "publishConfig": {
